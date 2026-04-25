@@ -1,0 +1,23 @@
+# E99 Pro Drone - 3D Mapping & Exploration Pipeline
+# Install: pip install -r requirements.txt
+#
+# ALSO REQUIRED (install separately):
+#   COLMAP with CUDA — https://github.com/colmap/colmap/releases
+#   Download the Windows CUDA pre-built binary, extract, and add to PATH.
+#   Verify: colmap --help
+
+# --- Computer Vision & Image Processing ---
+opencv-python>=4.8.0       # Video decode, image processing, frame extraction
+numpy>=1.24.0              # Array operations
+Pillow>=10.0               # Image I/O and manipulation
+
+# --- 3D Processing ---
+scipy>=1.11.0              # Spatial analysis, KDTree, spline interpolation
+plyfile>=1.0               # PLY file read/write (no Open3D dependency)
+
+# --- Utilities ---
+tqdm>=4.65.0               # Progress bars
+colorama>=0.4.6            # Colored terminal output (Windows)
+
+# --- Optional (requires Python 3.8-3.11) ---
+# open3d>=0.17.0           # Desktop 3D viewer (uncomment if Python <= 3.11)

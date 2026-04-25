@@ -1,0 +1,28 @@
+# Datasets (large binary files)
+datasets/
+*.mp4
+*.avi
+*.mkv
+
+# COLMAP outputs
+*.db
+*.db-journal
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Logs
+*.log

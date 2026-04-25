@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>E99 3D Explorer — Indoor Drone Mapping</title>
+    <meta name="description" content="Interactive 3D point cloud and mesh viewer for drone-captured indoor reconstructions">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Loading Screen -->
+    <div id="loading-screen">
+        <div class="loading-content">
+            <div class="loading-logo">
+                <svg width="64" height="64" viewBox="0 0 64 64" fill="none">
+                    <circle cx="32" cy="32" r="28" stroke="url(#grad1)" stroke-width="2" fill="none" opacity="0.3"/>
+                    <circle cx="32" cy="32" r="20" stroke="url(#grad1)" stroke-width="1.5" fill="none" opacity="0.5"/>
+                    <circle cx="32" cy="32" r="4" fill="url(#grad1)"/>
+                    <line x1="32" y1="4" x2="32" y2="12" stroke="url(#grad1)" stroke-width="1.5"/>
+                    <line x1="32" y1="52" x2="32" y2="60" stroke="url(#grad1)" stroke-width="1.5"/>
+                    <line x1="4" y1="32" x2="12" y2="32" stroke="url(#grad1)" stroke-width="1.5"/>
+                    <line x1="52" y1="32" x2="60" y2="32" stroke="url(#grad1)" stroke-width="1.5"/>
+                    <defs>
+                        <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
+                            <stop offset="0%" style="stop-color:#6366f1"/>
+                            <stop offset="100%" style="stop-color:#8b5cf6"/>
+                        </linearGradient>
+                    </defs>
+                </svg>
+            </div>
+            <h1 class="loading-title">E99 3D Explorer</h1>
+            <p class="loading-subtitle">Indoor Drone Mapping Viewer</p>
+            <div class="loading-bar-track">
+                <div class="loading-bar-fill" id="loading-progress"></div>
+            </div>
+            <p class="loading-status" id="loading-status">Initializing...</p>
+        </div>
+    </div>
+
+    <!-- Main Viewer -->
+    <div id="viewer-container">
+        <canvas id="render-canvas"></canvas>
+
+        <!-- Click to Start Overlay -->
+        <div id="start-overlay" class="hidden">
+            <div class="start-content">
+                <div class="start-icon">🎮</div>
+                <h2>Click to Explore</h2>
+                <p>Move with WASD · Look with Mouse</p>
+            </div>
+        </div>
+
+        <!-- HUD - Top Left -->
+        <div id="hud-top-left" class="hud-panel glass hidden">
+            <div class="hud-title">
+                <span class="hud-dot live"></span>
+                E99 3D Explorer
+            </div>
+            <div class="hud-stats">
+                <div class="stat">
+                    <span class="stat-label">Points</span>
+                    <span class="stat-value" id="stat-points">—</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-label">FPS</span>
+                    <span class="stat-value" id="stat-fps">—</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-label">Cameras</span>
+                    <span class="stat-value" id="stat-cameras">—</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- HUD - Bottom Left -->
+        <div id="hud-bottom-left" class="hud-panel glass hidden">
+            <div class="controls-grid">
+                <div class="control-item">
+                    <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>
+                    <span>Move</span>
+                </div>
+                <div class="control-item">
+                    <kbd>Q</kbd><kbd>E</kbd>
+                    <span>Up / Down</span>
+                </div>
+                <div class="control-item">
+                    <kbd>Mouse</kbd>
+                    <span>Look around</span>
+                </div>
+                <div class="control-item">
+                    <kbd>Shift</kbd>
+                    <span>Sprint</span>
+                </div>
+                <div class="control-item">
+                    <kbd>Scroll</kbd>
+                    <span>Speed</span>
+                </div>
+                <div class="control-item">
+                    <kbd>F</kbd>
+                    <span>Auto-fly</span>
+                </div>
+                <div class="control-item">
+                    <kbd>ESC</kbd>
+                    <span>Release mouse</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- HUD - Top Right (Settings) -->
+        <div id="hud-top-right" class="hud-panel glass hidden">
+            <div class="settings-title">Settings</div>
+            <div class="setting-row">
+                <label for="point-size-slider">Point Size</label>
+                <input type="range" id="point-size-slider" min="0.5" max="10" step="0.5" value="2">
+                <span id="point-size-value">2.0</span>
+            </div>
+            <div class="setting-row">
+                <label for="speed-slider">Move Speed</label>
+                <input type="range" id="speed-slider" min="0.01" max="1" step="0.01" value="0.1">
+                <span id="speed-value">0.10</span>
+            </div>
+            <div class="setting-row">
+                <label for="fov-slider">FOV</label>
+                <input type="range" id="fov-slider" min="30" max="120" step="5" value="60">
+                <span id="fov-value">60°</span>
+            </div>
+            <div class="setting-row toggle">
+                <label for="toggle-trajectory">Trajectory</label>
+                <input type="checkbox" id="toggle-trajectory" checked>
+            </div>
+            <div class="setting-row toggle">
+                <label for="toggle-cameras">Cameras</label>
+                <input type="checkbox" id="toggle-cameras" checked>
+            </div>
+        </div>
+
+        <!-- HUD - Position -->
+        <div id="hud-position" class="hud-panel glass mini hidden">
+            <span>X: <span id="pos-x">0.00</span></span>
+            <span>Y: <span id="pos-y">0.00</span></span>
+            <span>Z: <span id="pos-z">0.00</span></span>
+        </div>
+    </div>
+
+    <!-- File Input Modal (initial) -->
+    <div id="file-modal" class="hidden">
+        <div class="modal-content glass">
+            <h2>Load 3D Model</h2>
+            <p>Load a PLY point cloud or OBJ mesh from the reconstruction pipeline.</p>
+            <div class="file-drop-zone" id="file-drop-zone">
+                <div class="drop-icon">📁</div>
+                <p>Drag & drop a PLY/OBJ file here</p>
+                <p class="drop-subtitle">or click to browse</p>
+                <input type="file" id="file-input" accept=".ply,.obj" hidden>
+            </div>
+            <div class="modal-divider">
+                <span>or</span>
+            </div>
+            <div class="url-input-row">
+                <input type="text" id="model-url" placeholder="Enter model URL (e.g., /data/dense_cloud.ply)">
+                <button id="load-url-btn" class="btn-primary">Load</button>
+            </div>
+            <div id="sample-models" class="sample-models">
+                <!-- Will be populated by server -->
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="viewer.js"></script>
+</body>
+</html>
