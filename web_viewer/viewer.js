@@ -176,7 +176,8 @@ function setupSettings() {
         state.pointSize = parseFloat(e.target.value);
         document.getElementById('point-size-value').textContent = state.pointSize.toFixed(1);
         if (state.pointCloud && state.pointCloud.material) {
-            state.pointCloud.material.size = state.pointSize * 0.005;
+            const baseSize = state.basePointSize || 0.005;
+            state.pointCloud.material.size = baseSize * (state.pointSize / 2.0);
         }
     });
 
@@ -571,10 +572,11 @@ function createPointCloud(positions, colors, count, filename) {
 
     // Scale point size relative to model size
     const modelRadius = bsphere.radius || 1;
-    const autoPointSize = Math.max(0.002, modelRadius * 0.003);
+    const autoPointSize = Math.max(0.002, modelRadius * 0.005);
+    state.basePointSize = autoPointSize;
 
     const material = new THREE.PointsMaterial({
-        size: autoPointSize,
+        size: autoPointSize * (state.pointSize / 2.0),
         sizeAttenuation: true,
         vertexColors: !!colors,
         color: colors ? 0xffffff : 0x6366f1,
