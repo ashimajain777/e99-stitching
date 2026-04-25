@@ -144,11 +144,14 @@ def cmd_optimize(args):
 
 def cmd_mesh(args):
     """Generate mesh from point cloud."""
-    from reconstruction.mesh_generator import poisson_mesh, decimate_mesh
+    from reconstruction.mesh_generator import simple_mesh_from_ply, poisson_mesh_colmap
     print_stage("Mesh Generation")
-    mesh_path = poisson_mesh(args.input, args.output, args.depth)
-    if args.decimate:
-        decimate_mesh(mesh_path, target_triangles=args.decimate)
+    
+    if args.workspace:
+        poisson_mesh_colmap(args.workspace, args.output)
+    else:
+        max_points = args.decimate if args.decimate else 100000
+        simple_mesh_from_ply(args.input, args.output, max_points)
 
 
 def cmd_view(args):
@@ -396,6 +399,7 @@ Examples:
     p_mesh.add_argument("--output", help="Output mesh path")
     p_mesh.add_argument("--depth", type=int, default=9, help="Poisson depth")
     p_mesh.add_argument("--decimate", type=int, help="Target triangle count")
+    p_mesh.add_argument("--workspace", help="COLMAP workspace for poisson mesher")
 
     # --- view ---
     p_view = subparsers.add_parser("view", help="Launch Open3D viewer")
