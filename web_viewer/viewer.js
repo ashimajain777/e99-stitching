@@ -51,22 +51,25 @@ const state = {
 // ═══════════════════════════════════════════════════════════════
 
 function init() {
+    console.log('[E99 Viewer] Initializing...');
     const canvas = document.getElementById('render-canvas');
 
     // Scene
     state.scene = new THREE.Scene();
     state.scene.background = new THREE.Color(0x0a0a12);
-    state.scene.fog = new THREE.FogExp2(0x0a0a12, 0.02);
+    state.scene.fog = new THREE.FogExp2(0x0a0a12, 0.002);
 
-    // Camera
-    state.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.01, 1000);
+    // Camera — large far plane for big models
+    state.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.001, 10000);
     state.camera.position.set(0, 2, 5);
 
     // Renderer
     state.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
     state.renderer.setSize(window.innerWidth, window.innerHeight);
     state.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    state.renderer.outputEncoding = THREE.sRGBEncoding;
+    if (state.renderer.outputEncoding !== undefined) {
+        state.renderer.outputEncoding = THREE.sRGBEncoding;
+    }
 
     // Clock
     state.clock = new THREE.Clock();
@@ -95,6 +98,7 @@ function init() {
 
     // Start render loop
     animate();
+    console.log('[E99 Viewer] Init complete');
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -541,6 +545,15 @@ function parseOBJ(text, filename) {
 // ═══════════════════════════════════════════════════════════════
 
 function createPointCloud(positions, colors, count, filename) {
+    console.log(`[E99 Viewer] Creating point cloud: ${count} points`);
+
+    // Remove any existing point cloud
+    if (state.pointCloud) {
+        state.scene.remove(state.pointCloud);
+        state.pointCloud.geometry.dispose();
+        state.pointCloud.material.dispose();
+    }
+
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
 
@@ -549,14 +562,24 @@ function createPointCloud(positions, colors, count, filename) {
     }
 
     geometry.computeBoundingSphere();
+    geometry.computeBoundingBox();
+
+    const bbox = geometry.boundingBox;
+    const bsphere = geometry.boundingSphere;
+    console.log(`[E99 Viewer] Bounding box:`, bbox.min, bbox.max);
+    console.log(`[E99 Viewer] Center:`, bsphere.center, `Radius:`, bsphere.radius);
+
+    // Scale point size relative to model size
+    const modelRadius = bsphere.radius || 1;
+    const autoPointSize = Math.max(0.002, modelRadius * 0.003);
 
     const material = new THREE.PointsMaterial({
-        size: state.pointSize * 0.005,
+        size: autoPointSize,
         sizeAttenuation: true,
         vertexColors: !!colors,
         color: colors ? 0xffffff : 0x6366f1,
         transparent: true,
-        opacity: 0.9,
+        opacity: 0.95,
     });
 
     state.pointCloud = new THREE.Points(geometry, material);
@@ -585,21 +608,36 @@ function centerCamera() {
     const size = new THREE.Vector3();
     box.getSize(size);
 
-    // Position camera to see the whole scene
-    const maxDim = Math.max(size.x, size.y, size.z);
+    const maxDim = Math.max(size.x, size.y, size.z) || 1;
+    console.log(`[E99 Viewer] Model center:`, center, `size:`, size, `maxDim:`, maxDim);
+
+    // Position camera to see the whole scene — pull back enough
     state.camera.position.set(
         center.x,
-        center.y + maxDim * 0.3,
-        center.z + maxDim * 0.8
+        center.y + maxDim * 0.4,
+        center.z + maxDim * 1.2
     );
 
-    state.moveSpeed = maxDim * 0.005;
-    document.getElementById('speed-slider').value = state.moveSpeed;
-    document.getElementById('speed-value').textContent = state.moveSpeed.toFixed(2);
+    // Update camera to see distant objects
+    state.camera.near = maxDim * 0.0001;
+    state.camera.far = maxDim * 100;
+    state.camera.updateProjectionMatrix();
 
-    // Look at center
-    state.euler.yaw = Math.PI;
-    state.euler.pitch = -0.2;
+    // Adjust fog to match scene scale
+    state.scene.fog = new THREE.FogExp2(0x0a0a12, 0.5 / maxDim);
+
+    state.moveSpeed = maxDim * 0.008;
+    const speedSlider = document.getElementById('speed-slider');
+    speedSlider.max = Math.max(1, maxDim * 0.05).toFixed(2);
+    speedSlider.value = state.moveSpeed;
+    document.getElementById('speed-value').textContent = state.moveSpeed.toFixed(3);
+
+    // Look at center — compute yaw/pitch from camera to center
+    const dir = new THREE.Vector3().subVectors(center, state.camera.position).normalize();
+    state.euler.yaw = Math.atan2(dir.x, dir.z);
+    state.euler.pitch = Math.asin(dir.y);
+
+    console.log(`[E99 Viewer] Camera at:`, state.camera.position, `looking yaw:`, state.euler.yaw, `pitch:`, state.euler.pitch);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -614,7 +652,13 @@ function showLoading(msg) {
 }
 
 function hideLoading() {
-    document.getElementById('loading-screen').classList.add('fade-out');
+    const ls = document.getElementById('loading-screen');
+    ls.classList.add('fade-out');
+    // Fully remove after transition so it doesn't block the canvas
+    setTimeout(() => {
+        ls.style.pointerEvents = 'none';
+        ls.classList.add('hidden');
+    }, 700);
 }
 
 function updateLoadingProgress(percent) {
