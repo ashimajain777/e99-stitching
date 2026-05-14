@@ -17,8 +17,6 @@
     <!-- Three.js Graphics Stack -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/OBJLoader.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/PLYLoader.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tween.js/18.6.4/tween.umd.js"></script>
 
     <!-- App styles -->
@@ -64,7 +62,7 @@
         <div id="three-viewer"></div>
 
         <!-- Pannellum 360 Photo Sphere Target -->
-        <div id="panorama-viewer" class="hidden"></div>
+        <div id="panorama-viewer" style="visibility: hidden; pointer-events: none;"></div>
 
         <!-- ── PORTAL VIEW SWITCHER (Top Center) ── -->
         <div id="portal-switcher" class="hud-panel glass">
@@ -106,9 +104,6 @@
                 <button class="nav-btn" id="btn-shade-wire" title="X-Ray Wireframe Overlay">
                     🕸️ Wire
                 </button>
-                <button class="nav-btn" id="btn-shade-pts" title="Toggle Dense Point Cloud Layer">
-                    ✨ Points
-                </button>
                 <div class="nav-divider"></div>
                 <button class="nav-btn accent-btn" id="btn-cinematic" title="Start Automatic Cinematic Fly-Through Tour">
                     🎬 Cinematic Tour
@@ -117,16 +112,29 @@
 
             <!-- Pannellum Specific Controls (hidden initially) -->
             <div id="pano-controls" class="controls-group hidden">
-                <button class="nav-btn" id="btn-prev" title="Previous viewpoint (←)">
-                    ◀ Prev Sphere
+                <button class="nav-btn" id="btn-back-map" title="Return to 3D world map">
+                    🗺 World Map
                 </button>
-                <button class="nav-btn" id="btn-auto-tour" title="Auto-tour photo spheres (Space)">
-                    ▶ Play Spheres
+                <div class="nav-divider"></div>
+                <button class="nav-btn" id="btn-prev" title="Previous viewpoint">
+                    ◀ Prev
                 </button>
-                <button class="nav-btn" id="btn-next" title="Next viewpoint (→)">
-                    Next Sphere ▶
+                <button class="nav-btn" id="btn-auto-tour" title="Auto-tour all photo spheres">
+                    ▶ Auto Tour
+                </button>
+                <button class="nav-btn" id="btn-next" title="Next viewpoint">
+                    Next ▶
                 </button>
             </div>
+        </div>
+
+        <!-- ── Live update badge ── -->
+        <div id="live-badge">● New viewpoints added</div>
+
+        <!-- ── Pipeline processing indicator ── -->
+        <div id="processing-indicator" class="hud-panel glass hidden">
+            <span class="proc-dot"></span>
+            <span class="proc-label">Processing...</span>
         </div>
 
         <!-- ── HUD: Minimap Tracker (bottom right) ── -->
@@ -157,23 +165,12 @@
             <div id="help-pano" class="controls-grid hidden">
                 <div class="control-item"><kbd>Drag</kbd><span>Look around</span></div>
                 <div class="control-item"><kbd>Scroll</kbd><span>Zoom</span></div>
-                <div class="control-item"><kbd>← →</kbd><span>Prev / Next</span></div>
-                <div class="control-item"><kbd>Space</kbd><span>Auto-tour</span></div>
+                <div class="control-item"><kbd>◀ ▶ Btns</kbd><span>Prev / Next scene</span></div>
+                <div class="control-item"><kbd>Click marker</kbd><span>Jump to scene</span></div>
             </div>
         </div>
     </div>
 
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <!-- ERROR SCREEN                                                    -->
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <div id="error-screen" class="hidden">
-        <div class="error-content">
-            <div class="error-icon">⚠️</div>
-            <h2>Geometry Load Failed</h2>
-            <p id="error-message">Could not load the coherent 3D mesh model.</p>
-            <code>Verify that final_mesh.obj exists in datasets/output/</code>
-        </div>
-    </div>
 
     <script src="viewer.js"></script>
 </body>

@@ -54,6 +54,15 @@ except ImportError:
     GREEN = RED = CYAN = YELLOW = DIM = RESET = BRIGHT = ""
 
 
+def write_status(stage: str, **extra):
+    """Write pipeline_status.json so the web viewer can show live progress."""
+    import json
+    status_path = config.OUTPUT_DIR / "pipeline_status.json"
+    config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    with open(status_path, "w") as f:
+        json.dump({"stage": stage, "timestamp": time.time(), **extra}, f)
+
+
 def banner():
     print(f"""
 {CYAN}{BRIGHT}+==============================================================+
@@ -178,12 +187,14 @@ def cmd_run(args):
         from capture.frame_extractor import extract_frames
         config.FRAMES_ALL_DIR.mkdir(parents=True, exist_ok=True)
 
+        write_status("extracting")
         manifest = extract_frames(
             str(input_path),
             str(config.FRAMES_ALL_DIR),
             args.fps or config.EXTRACTION_FPS,
         )
         results["extraction"] = manifest
+        write_status("extracting_done", total_frames=manifest.get("total_frames", 0))
 
         frames_dir = config.FRAMES_ALL_DIR
 
@@ -203,6 +214,7 @@ def cmd_run(args):
     from capture.keyframe_selector import filter_frames
     config.FRAMES_FILTERED_DIR.mkdir(parents=True, exist_ok=True)
 
+    write_status("filtering")
     filter_stats = filter_frames(
         str(frames_dir),
         str(config.FRAMES_FILTERED_DIR),
@@ -219,6 +231,7 @@ def cmd_run(args):
     from preprocess.image_enhancer import enhance_images
     config.ENHANCED_DIR.mkdir(parents=True, exist_ok=True)
 
+    write_status("enhancing")
     enhance_stats = enhance_images(
         str(config.FRAMES_FILTERED_DIR),
         str(config.ENHANCED_DIR),
@@ -230,6 +243,7 @@ def cmd_run(args):
     print_stage("Viewpoint Clustering", stage, total_stages)
     from capture.keyframe_selector import cluster_into_viewpoints
 
+    write_status("clustering")
     cluster_report = cluster_into_viewpoints(
         str(config.ENHANCED_DIR),
         str(config.VIEWPOINTS_DIR),
@@ -245,6 +259,7 @@ def cmd_run(args):
     print_stage("Panorama Stitching", stage, total_stages)
     from stitching.panorama_stitcher import stitch_all_viewpoints
 
+    write_status("stitching", total_viewpoints=cluster_report["num_viewpoints"])
     stitch_results = stitch_all_viewpoints(
         str(config.VIEWPOINTS_DIR),
         str(config.PANORAMAS_DIR),
@@ -261,12 +276,14 @@ def cmd_run(args):
     print_stage("Tour Builder", stage, total_stages)
     from tour.tour_builder import build_tour
 
+    write_status("building_tour")
     tour = build_tour(
         str(config.VIEWPOINTS_DIR),
         str(config.PANORAMAS_DIR),
         str(config.TOUR_JSON_PATH),
     )
     results["tour"] = tour
+    write_status("done", scenes=len(tour.get("scenes", {})))
 
     # ── Summary ──
     total_time = time.time() - overall_start

@@ -613,6 +613,71 @@ kbd {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
+   LIVE BADGE
+   ═══════════════════════════════════════════════════════════════════════ */
+
+#live-badge {
+    position: fixed;
+    top: 72px;
+    left: 50%;
+    transform: translateX(-50%) translateY(-8px);
+    background: rgba(52, 211, 153, 0.12);
+    border: 1px solid rgba(52, 211, 153, 0.35);
+    color: var(--accent-green);
+    font-size: 12px;
+    font-weight: 500;
+    padding: 6px 16px;
+    border-radius: 20px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.3s ease, transform 0.3s ease;
+    z-index: 200;
+}
+
+#live-badge.visible {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   PROCESSING INDICATOR
+   ═══════════════════════════════════════════════════════════════════════ */
+
+#processing-indicator {
+    position: fixed;
+    bottom: 100px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 16px;
+    font-size: 12px;
+    color: var(--accent-amber);
+    z-index: 200;
+    pointer-events: none;
+}
+
+.proc-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent-amber);
+    animation: proc-pulse 1.2s ease-in-out infinite;
+    flex-shrink: 0;
+}
+
+@keyframes proc-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%       { opacity: 0.35; transform: scale(0.7); }
+}
+
+.proc-label {
+    text-transform: capitalize;
+    letter-spacing: 0.04em;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
    RESPONSIVE
    ═══════════════════════════════════════════════════════════════════════ */
 

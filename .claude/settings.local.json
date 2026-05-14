@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import web_viewer.server\")",
+      "Bash(python -c ' *)"
+    ]
+  }
+}

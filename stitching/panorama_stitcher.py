@@ -413,26 +413,36 @@ def stitch_viewpoint(vp_dir: Path, output_path: Path,
     if result is None:
         return {"success": False, "reason": "all methods failed"}
 
-    # ── Convert to equirectangular format ──
-    equirect = pad_to_equirectangular(result)
+    # ── Compute angular coverage ──
+    h_res, w_res = result.shape[:2]
+    if method_used == "single_frame":
+        # Honest single-frame: report actual camera FOV, not a fake 360
+        coverage_h = float(config.CAMERA_FOV_H)
+        coverage_v = round(coverage_h * h_res / w_res, 1)
+    else:
+        # Stitched panorama: estimate coverage from how much wider it got
+        orig_h, orig_w = images[0].shape[:2] if images else (h_res, w_res)
+        coverage_h = min(360.0, round(config.CAMERA_FOV_H * w_res / orig_w, 1))
+        coverage_v = min(180.0, round(coverage_h * h_res / w_res, 1))
 
-    # Save
+    # ── Save image at native resolution (no equirect padding) ──
+    # Pannellum renders correctly using haov/vaov; black-padded equirect looks terrible
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     if config.PANO_FORMAT == "jpg":
-        cv2.imwrite(str(output_path), equirect,
+        cv2.imwrite(str(output_path), result,
                     [cv2.IMWRITE_JPEG_QUALITY, config.PANO_QUALITY])
     else:
-        cv2.imwrite(str(output_path), equirect)
-
-    h, w = equirect.shape[:2]
+        cv2.imwrite(str(output_path), result)
 
     return {
         "success": True,
         "method": method_used,
+        "coverage_h": coverage_h,
+        "coverage_v": coverage_v,
         "input_frames": len(images),
         "output_path": str(output_path),
-        "output_size": [w, h],
+        "output_size": [w_res, h_res],
     }
 
 

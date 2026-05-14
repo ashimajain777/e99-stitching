@@ -1,325 +1,316 @@
 /**
- * E99 Coherent World Portal — Unified 3D Graphics Controller
- * ============================================================
- * Implements a state-of-the-art Three.js rendering environment for the mapped 3D mesh
- * alongside the original Pannellum 360 photo sphere engine. Features smooth orbit/fly navigation,
- * custom lighting arrays, cinematic camera tours, and hybrid mode switching.
+ * E99 World Portal — Real-Time Navigation Controller
+ *
+ * 3D mode: Builds a live world map from tour.json.
+ *   - Drone path rendered as a glowing tube
+ *   - Each viewpoint is a glowing sphere with a floating panorama thumbnail
+ *   - Click any viewpoint to jump into its 360° photo sphere
+ *   - Orbit, fly, and cinematic tour modes
+ *
+ * 360° mode: Pannellum photo sphere viewer.
+ *   - Configured with per-scene haov/vaov so partial panoramas fill the screen
+ *   - Hotspot navigation between connected viewpoints
+ *   - Back-to-map button returns to 3D world
+ *
+ * Live updates: polls /api/status every 3 s during pipeline runs,
+ *   adding new viewpoints to both views without a page reload.
  */
 
-// ═══════════════════════════════════════════════════════════════════════
-// GLOBAL STATE
-// ═══════════════════════════════════════════════════════════════════════
-
-// Portal Modes: 'three' (3D Coherent World) vs 'pano' (360° Photo Spheres)
+// ── Global state ──────────────────────────────────────────────────────────────
 let activePortalMode = 'three';
-
-// Three.js Core
 let scene, camera, renderer, controls;
 let mainMeshGroup = null;
-let pointCloudGroup = null;
+let viewpointObjects = [];   // THREE.Group[] with userData.sceneId — raycasted
+let billboardGroups = [];    // same groups, rotated toward camera each frame
 let isFlyMode = false;
+const keys = { w: false, a: false, s: false, d: false, q: false, e: false };
+let mouseLook = { drag: false, prevX: 0, prevY: 0, yaw: 0, pitch: 0 };
+const FLY_SPEED = 0.08;
 
-// Lighting & Shading Cache
-let meshMaterial = null;
-let wireframeMaterial = null;
-
-// Navigation States (Fly Mode)
-const keysPressed = { w: false, a: false, s: false, d: false, q: false, e: false };
-let mouseLook = { isDragging: false, prevX: 0, prevY: 0, yaw: 0, pitch: 0 };
-const flySpeed = 0.15;
-
-// Cinematic Tour State
 let isCinematicTouring = false;
-let tourTween = null;
+let activeTween = null;
 
-// Tour Config Cache
 let tourConfig = null;
 let metaData = null;
 let pannellumViewer = null;
 let currentPanoIdx = 0;
 let sceneOrderList = [];
+let knownViewpointIds = new Set();
+let lastTourMtime = 0;
 
-// ═══════════════════════════════════════════════════════════════════════
-// INITIALIZATION PORTAL
-// ═══════════════════════════════════════════════════════════════════════
+let raycaster, mouse;
 
-document.addEventListener('DOMContentLoaded', initPortal);
+// ── Boot ──────────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', boot);
 
-async function initPortal() {
-    updateLoading(10, 'Fetching spatial configuration...');
+async function boot() {
+    updateLoading(5, 'Connecting to server...');
+    tourConfig = await fetchTourConfig();
+    metaData   = tourConfig._meta || {};
+    sceneOrderList = metaData.scene_order || Object.keys(tourConfig.scenes || {});
 
-    // 1. Fetch JSON configuration
-    try {
-        const response = await fetch('/api/tour');
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        tourConfig = await response.json();
-        metaData = tourConfig._meta || {};
-        sceneOrderList = metaData.scene_order || Object.keys(tourConfig.scenes || {});
-    } catch (err) {
-        console.warn('Could not load tour.json via API, proceeding with default mesh loader.', err);
-    }
+    updateLoading(25, 'Initialising 3D engine...');
+    setupThree();
 
-    updateLoading(30, 'Initializing Three.js Graphics Context...');
+    updateLoading(45, 'Building world map...');
+    await buildWorld();
 
-    // 2. Setup Three.js Context
-    setupThreeEnvironment();
+    updateLoading(78, 'Initialising 360° viewer...');
+    if (sceneOrderList.length > 0) initPannellum();
 
-    updateLoading(50, 'Loading Reconstructed 3D Geometry...');
+    updateLoading(92, 'Wiring controls...');
+    setupInterface();
+    setupRaycast();
 
-    // 3. Load Main 3D Mesh
-    await loadCoherent3DMesh();
-
-    updateLoading(85, 'Initializing Hybrid UI Engines...');
-
-    // 4. Setup Optional Pannellum Engine in Background
-    if (tourConfig && tourConfig.scenes && Object.keys(tourConfig.scenes).length > 0) {
-        initPannellumViewer();
-    } else {
-        document.getElementById('tab-pano').style.display = 'none'; // hide if no pano scenes
-    }
-
-    // 5. Setup UI Event Listeners
-    setupPortalInterface();
-
-    updateLoading(100, 'Environment Ready!');
-
-    // 6. Reveal World
+    updateLoading(100, 'Ready.');
     setTimeout(() => {
-        const loader = document.getElementById('loading-screen');
-        if (loader) loader.classList.add('fade-out');
-        onWindowResize(); // Force perfect sizing
-    }, 500);
+        const ldr = document.getElementById('loading-screen');
+        if (ldr) {
+            ldr.classList.add('fade-out');
+            ldr.style.pointerEvents = 'none';
+            setTimeout(() => ldr.style.display = 'none', 600);
+        }
+        onResize();
+    }, 350);
+
+    pollLiveUpdates();
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// THREE.JS ENVIRONMENT SETUP
-// ═══════════════════════════════════════════════════════════════════════
+// ── Tour config fetch ─────────────────────────────────────────────────────────
+async function fetchTourConfig() {
+    try {
+        const r = await fetch('/api/tour');
+        if (!r.ok) throw new Error(r.status);
+        return await r.json();
+    } catch {
+        return { scenes: {}, _meta: { positions: {}, scene_order: [], connections: [] } };
+    }
+}
 
-function setupThreeEnvironment() {
+// ── Three.js setup ────────────────────────────────────────────────────────────
+function setupThree() {
     const container = document.getElementById('three-viewer');
 
-    // Scene
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0a0a0f);
+    scene.background = new THREE.Color(0x080812);
+    scene.fog = new THREE.FogExp2(0x080812, 0.035);
 
-    // Camera
-    camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
-    camera.position.set(0, 5, 15);
+    camera = new THREE.PerspectiveCamera(52, innerWidth / innerHeight, 0.05, 500);
+    camera.position.set(0, 8, 12);
 
-    // Renderer
     renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.outputEncoding = THREE.sRGBEncoding;
     container.appendChild(renderer.domElement);
 
-    // OrbitControls
     controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
-    controls.dampingFactor = 0.05;
-    controls.maxPolarAngle = Math.PI / 2 + 0.1; // allow looking slightly below horizon
+    controls.dampingFactor = 0.06;
+    controls.maxPolarAngle = Math.PI * 0.88;
+    controls.minDistance = 1;
+    controls.maxDistance = 60;
 
-    // Custom Studio Lighting Array
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
-    scene.add(ambientLight);
+    // Lighting
+    scene.add(new THREE.AmbientLight(0x9090cc, 0.55));
+    const sun = new THREE.DirectionalLight(0xffffff, 0.9);
+    sun.position.set(6, 14, 6);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(1024, 1024);
+    scene.add(sun);
+    scene.add(Object.assign(new THREE.DirectionalLight(0x6366f1, 0.35), {
+        position: new THREE.Vector3(-8, 6, -8)
+    }));
 
-    const dirLight1 = new THREE.DirectionalLight(0xffffff, 1.0);
-    dirLight1.position.set(10, 20, 10);
-    dirLight1.castShadow = true;
-    dirLight1.shadow.mapSize.width = 2048;
-    dirLight1.shadow.mapSize.height = 2048;
-    dirLight1.shadow.bias = -0.0001;
-    scene.add(dirLight1);
-
-    // Atmospheric Key Lights for wow aesthetics
-    const rimLight = new THREE.DirectionalLight(0x818cf8, 0.8);
-    rimLight.position.set(-15, 10, -15);
-    scene.add(rimLight);
-
-    const floorGrid = new THREE.GridHelper(50, 50, 0x6366f1, 0x222244);
-    floorGrid.position.y = -0.05;
-    scene.add(floorGrid);
-
-    // Mesh Group Container
     mainMeshGroup = new THREE.Group();
     scene.add(mainMeshGroup);
 
-    // Window Resize Observer
-    window.addEventListener('resize', onWindowResize);
+    raycaster = new THREE.Raycaster();
+    mouse     = new THREE.Vector2();
 
-    // Start Frame Loop
-    renderer.setAnimationLoop(animateFrame);
+    window.addEventListener('resize', onResize);
+    renderer.setAnimationLoop(renderFrame);
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// GEOMETRY LOADERS
-// ═══════════════════════════════════════════════════════════════════════
+// ── Build 3D world from tour.json ─────────────────────────────────────────────
+async function buildWorld() {
+    const positions  = metaData.positions  || {};
+    const sceneOrder = metaData.scene_order || sceneOrderList;
 
-function loadCoherent3DMesh() {
-    return new Promise((resolve) => {
-        const objLoader = new THREE.OBJLoader();
-
-        objLoader.load(
-            '/data/output/final_mesh.obj',
-            (object) => {
-                // Shared materials
-                meshMaterial = new THREE.MeshStandardMaterial({
-                    color: 0xe0e0e0,
-                    roughness: 0.4,
-                    metalness: 0.1,
-                    side: THREE.DoubleSide
-                });
-
-                wireframeMaterial = new THREE.MeshBasicMaterial({
-                    color: 0x34d399,
-                    wireframe: true,
-                    transparent: true,
-                    opacity: 0.25
-                });
-
-                // Apply materials & shadows
-                object.traverse((child) => {
-                    if (child.isMesh) {
-                        child.material = meshMaterial;
-                        child.castShadow = true;
-                        child.receiveShadow = true;
-                        // Optimize normal shading
-                        child.geometry.computeVertexNormals();
-                    }
-                });
-
-                // Automatically Center and Frame Geometry
-                const box = new THREE.Box3().setFromObject(object);
-                const center = box.getCenter(new THREE.Vector3());
-                const size = box.getSize(new THREE.Vector3());
-                const maxDim = Math.max(size.x, size.y, size.z);
-
-                // Offset geometry inside group so its center is exactly at scene origin (0,0,0)
-                object.position.x = -center.x;
-                object.position.y = -center.y + size.y / 2; // place flat on ground grid
-                object.position.z = -center.z;
-
-                mainMeshGroup.add(object);
-
-                // Adjust camera view gracefully to frame the loaded environment
-                camera.position.set(0, size.y * 0.8, maxDim * 1.2);
-                controls.target.set(0, size.y * 0.3, 0);
-                controls.update();
-
-                // Mouse yaw/pitch base cache
-                mouseLook.yaw = Math.atan2(-camera.position.x, -camera.position.z);
-                mouseLook.pitch = Math.asin(camera.position.y / camera.position.length());
-
-                // Build Minimap
-                drawMinimapPath(box);
-
-                updateLoading(70, 'Mesh parsed successfully.');
-                resolve(true);
-            },
-            (xhr) => {
-                if (xhr.total > 0) {
-                    const percent = Math.round((xhr.loaded / xhr.total) * 100);
-                    updateLoading(50 + percent * 0.3, `Downloading 3D Mesh (${percent}%)...`);
-                }
-            },
-            (err) => {
-                console.error('Failed to load final_mesh.obj:', err);
-                // Try falling back to clean point cloud if OBJ is missing
-                loadPointCloudFallback().then(resolve);
-            }
-        );
-    });
-}
-
-function loadPointCloudFallback() {
-    return new Promise((resolve) => {
-        updateLoading(65, 'Trying dense point cloud fallback...');
-        const plyLoader = new THREE.PLYLoader();
-        plyLoader.load(
-            '/data/output/dense_cloud_clean.ply',
-            (geometry) => {
-                const material = new THREE.PointsMaterial({
-                    size: 0.05,
-                    vertexColors: geometry.hasAttribute('color'),
-                    color: geometry.hasAttribute('color') ? 0xffffff : 0x818cf8
-                });
-                const points = new THREE.Points(geometry, material);
-
-                // Center points
-                geometry.computeBoundingBox();
-                const center = geometry.boundingBox.getCenter(new THREE.Vector3());
-                points.position.sub(center);
-
-                mainMeshGroup.add(points);
-                resolve(true);
-            },
-            undefined,
-            () => {
-                // Trigger error screen if all geometry fails
-                document.getElementById('loading-screen').classList.add('hidden');
-                document.getElementById('error-screen').classList.remove('hidden');
-                resolve(false);
-            }
-        );
-    });
-}
-
-function togglePointCloudLayer() {
-    const btnPts = document.getElementById('btn-shade-pts');
-    const isActive = btnPts.classList.toggle('active');
-
-    if (isActive) {
-        if (!pointCloudGroup) {
-            pointCloudGroup = new THREE.Group();
-            scene.add(pointCloudGroup);
-            const plyLoader = new THREE.PLYLoader();
-            plyLoader.load('/data/output/dense_cloud.ply', (geometry) => {
-                const mat = new THREE.PointsMaterial({ size: 0.03, color: 0xfbbf24, transparent: true, opacity: 0.75 });
-                const pts = new THREE.Points(geometry, mat);
-                // Match parent mesh centering logic
-                if (mainMeshGroup && mainMeshGroup.children[0]) {
-                    pts.position.copy(mainMeshGroup.children[0].position);
-                }
-                pointCloudGroup.add(pts);
-            });
-        } else {
-            pointCloudGroup.visible = true;
-        }
-    } else if (pointCloudGroup) {
-        pointCloudGroup.visible = false;
+    if (sceneOrder.length === 0) {
+        addWaitingRing();
+        document.getElementById('scene-counter').textContent = 'Awaiting pipeline...';
+        return;
     }
+
+    // Map minimap coords (0–100) → world units (roughly –9 to +9)
+    const wp = {};
+    for (const [id, pos] of Object.entries(positions)) {
+        const [mx, my] = Array.isArray(pos) ? pos : [50, 50];
+        wp[id] = new THREE.Vector3((mx - 50) * 0.18, 0, (my - 50) * 0.18);
+    }
+
+    // Ground
+    const ground = new THREE.Mesh(
+        new THREE.PlaneGeometry(35, 35),
+        new THREE.MeshStandardMaterial({ color: 0x0b0b18, roughness: 1 })
+    );
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = -0.02;
+    ground.receiveShadow = true;
+    mainMeshGroup.add(ground);
+    mainMeshGroup.add(new THREE.GridHelper(30, 60, 0x18183a, 0x101020));
+
+    // Path tube
+    const pathPts = sceneOrder.filter(id => wp[id]).map(id => wp[id].clone().setY(0.03));
+    if (pathPts.length >= 2) {
+        const curve = new THREE.CatmullRomCurve3(pathPts, false, 'centripetal');
+        const segs  = Math.max(60, pathPts.length * 8);
+        mainMeshGroup.add(new THREE.Mesh(
+            new THREE.TubeGeometry(curve, segs, 0.045, 8, false),
+            new THREE.MeshBasicMaterial({ color: 0x4338ca, transparent: true, opacity: 0.75 })
+        ));
+        // Soft glow halo around path
+        mainMeshGroup.add(new THREE.Mesh(
+            new THREE.TubeGeometry(curve, segs, 0.14, 8, false),
+            new THREE.MeshBasicMaterial({ color: 0x6366f1, transparent: true, opacity: 0.07 })
+        ));
+    }
+
+    // Viewpoint markers
+    const tex  = new THREE.TextureLoader();
+    const sGeo = new THREE.SphereGeometry(0.19, 24, 24);
+    for (let i = 0; i < sceneOrder.length; i++) {
+        const id  = sceneOrder[i];
+        const pos = wp[id];
+        if (!pos) continue;
+        spawnViewpoint(id, pos, i, tex, sGeo);
+        knownViewpointIds.add(id);
+    }
+
+    // Frame camera over scene
+    if (pathPts.length > 0) {
+        const box  = new THREE.Box3();
+        pathPts.forEach(p => box.expandByPoint(p));
+        const ctr  = box.getCenter(new THREE.Vector3());
+        const size = box.getSize(new THREE.Vector3());
+        const span = Math.max(size.x, size.z, 4);
+        camera.position.set(ctr.x + span * 0.2, span * 0.75, ctr.z + span * 1.05);
+        controls.target.set(ctr.x, 0, ctr.z);
+        controls.update();
+    }
+
+    drawMinimap();
+    document.getElementById('scene-counter').textContent = `${sceneOrder.length} viewpoints`;
+    document.getElementById('hud-mode-badge').textContent = '3D World Map';
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// ANIMATION & CONTROLS FRAME LOOP
-// ═══════════════════════════════════════════════════════════════════════
+// ── Spawn one viewpoint marker ────────────────────────────────────────────────
+function spawnViewpoint(id, pos, index, texLoader, sGeo) {
+    texLoader = texLoader || new THREE.TextureLoader();
+    sGeo      = sGeo      || new THREE.SphereGeometry(0.19, 24, 24);
 
-function animateFrame() {
+    const group = new THREE.Group();
+    group.position.copy(pos).setY(0.19);
+    group.userData = { sceneId: id, viewpointIndex: index };
+
+    // Glowing sphere
+    const isStart = index === 0;
+    const sphere  = new THREE.Mesh(sGeo.clone(), new THREE.MeshStandardMaterial({
+        color:             isStart ? 0x34d399 : 0x6366f1,
+        emissive:          isStart ? 0x0c3320 : 0x1a1a55,
+        emissiveIntensity: 0.65,
+        roughness:         0.15,
+        metalness:         0.4,
+    }));
+    sphere.castShadow = true;
+    group.add(sphere);
+
+    // Floating panorama thumbnail
+    const panoUrl = `/panoramas/${id}.jpg`;
+    texLoader.load(panoUrl,
+        (tex) => {
+            // Border frame
+            const border = new THREE.Mesh(
+                new THREE.PlaneGeometry(1.06, 0.56),
+                new THREE.MeshBasicMaterial({ color: 0x6366f1, side: THREE.DoubleSide, transparent: true, opacity: 0.85 })
+            );
+            border.position.y = 0.75;
+            group.add(border);
+
+            // Image plane
+            const img = new THREE.Mesh(
+                new THREE.PlaneGeometry(1.0, 0.5),
+                new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide })
+            );
+            img.position.y = 0.75;
+            img.position.z = 0.003;
+            group.add(img);
+        },
+        undefined,
+        () => {
+            // Placeholder when panorama not yet ready
+            const ph = new THREE.Mesh(
+                new THREE.PlaneGeometry(1.0, 0.5),
+                new THREE.MeshBasicMaterial({ color: 0x1c1c3a, side: THREE.DoubleSide, transparent: true, opacity: 0.6 })
+            );
+            ph.position.y = 0.75;
+            group.add(ph);
+        }
+    );
+
+    mainMeshGroup.add(group);
+    viewpointObjects.push(group);
+    billboardGroups.push(group);
+}
+
+function addWaitingRing() {
+    mainMeshGroup.add(new THREE.GridHelper(20, 40, 0x18183a, 0x101020));
+    const ring = new THREE.Mesh(
+        new THREE.TorusGeometry(2.0, 0.045, 8, 60),
+        new THREE.MeshBasicMaterial({ color: 0x6366f1, transparent: true, opacity: 0.4 })
+    );
+    ring.rotation.x = -Math.PI / 2;
+    ring.userData.spinRing = true;
+    mainMeshGroup.add(ring);
+}
+
+// ── Render loop ───────────────────────────────────────────────────────────────
+function renderFrame() {
     if (activePortalMode !== 'three') return;
+    if (typeof TWEEN !== 'undefined') TWEEN.update();
 
-    TWEEN.update();
+    // Billboard: rotate each viewpoint group to face camera around Y axis only
+    if (billboardGroups.length > 0) {
+        billboardGroups.forEach(g => {
+            g.rotation.y = Math.atan2(
+                camera.position.x - g.position.x,
+                camera.position.z - g.position.z
+            );
+        });
+    }
+
+    // Spin waiting ring
+    mainMeshGroup.children.forEach(c => {
+        if (c.userData.spinRing) c.rotation.z += 0.004;
+    });
 
     if (isFlyMode && !isCinematicTouring) {
-        // Compute standard camera direction vectors
-        const forward = new THREE.Vector3();
-        camera.getWorldDirection(forward);
-        forward.y = 0; // lock translation to horizontal plane
-        forward.normalize();
-
-        const right = new THREE.Vector3(-forward.z, 0, forward.x);
-
-        // Apply Keyboard Velocities
-        if (keysPressed.w) camera.position.addScaledVector(forward, flySpeed);
-        if (keysPressed.s) camera.position.addScaledVector(forward, -flySpeed);
-        if (keysPressed.a) camera.position.addScaledVector(right, -flySpeed);
-        if (keysPressed.d) camera.position.addScaledVector(right, flySpeed);
-        if (keysPressed.q) camera.position.y -= flySpeed * 0.8;
-        if (keysPressed.e) camera.position.y += flySpeed * 0.8;
-
-        // Keep camera target slightly ahead to maintain look orientation logic
-        controls.target.copy(camera.position).addScaledVector(camera.getWorldDirection(new THREE.Vector3()), 1.0);
+        const fwd = new THREE.Vector3();
+        camera.getWorldDirection(fwd);
+        fwd.y = 0; fwd.normalize();
+        const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
+        if (keys.w) camera.position.addScaledVector(fwd,   FLY_SPEED);
+        if (keys.s) camera.position.addScaledVector(fwd,  -FLY_SPEED);
+        if (keys.a) camera.position.addScaledVector(right, -FLY_SPEED);
+        if (keys.d) camera.position.addScaledVector(right,  FLY_SPEED);
+        if (keys.q) camera.position.y -= FLY_SPEED * 0.6;
+        if (keys.e) camera.position.y += FLY_SPEED * 0.6;
+        controls.target.copy(camera.position).addScaledVector(
+            camera.getWorldDirection(new THREE.Vector3()), 1.0
+        );
     } else if (!isCinematicTouring) {
         controls.update();
     }
@@ -327,313 +318,360 @@ function animateFrame() {
     renderer.render(scene, camera);
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// FIRST-PERSON / ORBIT CONTROLS HANDLING
-// ═══════════════════════════════════════════════════════════════════════
-
-function setupPortalInterface() {
-    // ── PORTAL MODE TABS ──
-    document.getElementById('tab-three').addEventListener('click', () => switchPortalMode('three'));
-    document.getElementById('tab-pano').addEventListener('click', () => switchPortalMode('pano'));
-
-    // ── THREE.JS MODE BUTTONS ──
-    document.getElementById('btn-mode-orbit').addEventListener('click', () => setNavigationMode(false));
-    document.getElementById('btn-mode-fly').addEventListener('click', () => setNavigationMode(true));
-
-    // ── SHADING Toggles ──
-    document.getElementById('btn-shade-mesh').addEventListener('click', () => setShadingMode('mesh'));
-    document.getElementById('btn-shade-wire').addEventListener('click', () => setShadingMode('wire'));
-    document.getElementById('btn-shade-pts').addEventListener('click', togglePointCloudLayer);
-
-    // ── CINEMATIC TOUR ──
-    document.getElementById('btn-cinematic').addEventListener('click', toggleCinematicTour);
-
-    // ── KEYBOARD & MOUSE DRAG LOOK (Fly Mode) ──
-    window.addEventListener('keydown', (e) => {
-        const key = e.key.toLowerCase();
-        if (key in keysPressed) keysPressed[key] = true;
+// ── Raycasting — click viewpoint → enter panorama ─────────────────────────────
+function setupRaycast() {
+    renderer.domElement.addEventListener('click', e => {
+        if (isFlyMode || isCinematicTouring || activePortalMode !== 'three') return;
+        mouse.x =  (e.clientX / innerWidth)  * 2 - 1;
+        mouse.y = -(e.clientY / innerHeight) * 2 + 1;
+        raycaster.setFromCamera(mouse, camera);
+        const hits = raycaster.intersectObjects(viewpointObjects, true);
+        if (!hits.length) return;
+        let obj = hits[0].object;
+        while (obj && !obj.userData?.sceneId) obj = obj.parent;
+        if (obj?.userData?.sceneId) enterPano(obj.userData.sceneId);
     });
 
-    window.addEventListener('keyup', (e) => {
-        const key = e.key.toLowerCase();
-        if (key in keysPressed) keysPressed[key] = false;
-    });
-
-    const domTarget = renderer.domElement;
-    domTarget.addEventListener('mousedown', (e) => {
-        if (isFlyMode) {
-            mouseLook.isDragging = true;
-            mouseLook.prevX = e.clientX;
-            mouseLook.prevY = e.clientY;
-        }
-    });
-
-    window.addEventListener('mouseup', () => { mouseLook.isDragging = false; });
-
-    domTarget.addEventListener('mousemove', (e) => {
-        if (isFlyMode && mouseLook.isDragging && !isCinematicTouring) {
-            const deltaX = e.clientX - mouseLook.prevX;
-            const deltaY = e.clientY - mouseLook.prevY;
-            mouseLook.prevX = e.clientX;
-            mouseLook.prevY = e.clientY;
-
-            mouseLook.yaw -= deltaX * 0.003;
-            mouseLook.pitch = Math.max(-Math.PI/2.1, Math.min(Math.PI/2.1, mouseLook.pitch - deltaY * 0.003));
-
-            // Convert spherical angles to Target Vector
-            const direction = new THREE.Vector3(
-                Math.cos(mouseLook.pitch) * Math.sin(mouseLook.yaw),
-                Math.sin(mouseLook.pitch),
-                Math.cos(mouseLook.pitch) * Math.cos(mouseLook.yaw)
-            );
-
-            controls.target.copy(camera.position).add(direction);
-            camera.lookAt(controls.target);
-        }
+    renderer.domElement.addEventListener('mousemove', e => {
+        if (activePortalMode !== 'three') return;
+        mouse.x =  (e.clientX / innerWidth)  * 2 - 1;
+        mouse.y = -(e.clientY / innerHeight) * 2 + 1;
+        raycaster.setFromCamera(mouse, camera);
+        const hits = raycaster.intersectObjects(viewpointObjects, true);
+        renderer.domElement.style.cursor = (hits.length && !isFlyMode) ? 'pointer' : '';
     });
 }
 
-function setNavigationMode(enableFly) {
-    isFlyMode = enableFly;
-    document.getElementById('btn-mode-orbit').classList.toggle('active', !enableFly);
-    document.getElementById('btn-mode-fly').classList.toggle('active', enableFly);
-
-    document.getElementById('help-three-orbit').classList.toggle('hidden', enableFly);
-    document.getElementById('help-three-fly').classList.toggle('hidden', !enableFly);
-
-    if (enableFly) {
-        controls.enabled = false; // detach orbit damping conflicts
-        // Sync yaw/pitch cache exactly to camera's forward orientation
-        const dir = camera.getWorldDirection(new THREE.Vector3());
-        mouseLook.yaw = Math.atan2(dir.x, dir.z);
-        mouseLook.pitch = Math.asin(dir.y);
-    } else {
-        controls.enabled = true;
-        // push target slightly forward to reorient orbit bounds nicely
-        controls.target.copy(camera.position).addScaledVector(camera.getWorldDirection(new THREE.Vector3()), 5.0);
-        controls.update();
-    }
+function enterPano(sceneId) {
+    const idx = sceneOrderList.indexOf(sceneId);
+    if (idx >= 0) currentPanoIdx = idx;
+    switchMode('pano');
+    if (pannellumViewer) pannellumViewer.loadScene(sceneId);
 }
 
-function setShadingMode(mode) {
-    const isWire = mode === 'wire';
-    document.getElementById('btn-shade-mesh').classList.toggle('active', !isWire);
-    document.getElementById('btn-shade-wire').classList.toggle('active', isWire);
-
-    if (mainMeshGroup) {
-        mainMeshGroup.traverse((child) => {
-            if (child.isMesh) {
-                child.material = isWire ? wireframeMaterial : meshMaterial;
-            }
-        });
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// AUTOMATIC CINEMATIC FLY-THROUGH TOUR
-// ═══════════════════════════════════════════════════════════════════════
-
-function toggleCinematicTour() {
-    const btnTour = document.getElementById('btn-cinematic');
-    isCinematicTouring = !isCinematicTouring;
-
-    if (isCinematicTouring) {
-        btnTour.classList.add('active');
-        btnTour.textContent = '⏹️ Stop Cinematic';
-        controls.enabled = false;
-        startCinematicSequence();
-    } else {
-        btnTour.classList.remove('active');
-        btnTour.textContent = '🎬 Cinematic Tour';
-        if (!isFlyMode) controls.enabled = true;
-        if (tourTween) tourTween.stop();
-    }
-}
-
-function startCinematicSequence() {
-    if (!metaData || !metaData.positions || sceneOrderList.length < 2) {
-        alert('Cinematic flight markers not found in tour config. Freely navigate with mouse/keyboard.');
-        toggleCinematicTour();
-        return;
-    }
-
-    // Build cinematic spline waypoints directly mapped from extracted drone camera matrices
-    const pts = metaData.positions;
-    const waypoints = [];
-
-    // Base offset matching object group adjustment cache
-    let groupOffset = new THREE.Vector3(0,0,0);
-    if (mainMeshGroup && mainMeshGroup.children[0]) { groupOffset.copy(mainMeshGroup.children[0].position); }
-
-    for (const scId of sceneOrderList) {
-        if (pts[scId]) {
-            // Apply scale mapping logic to place waypoints perfectly matching the mesh scale coordinate array
-            waypoints.push(new THREE.Vector3(
-                pts[scId][0] * 0.1 + groupOffset.x,
-                2.5, // keep eye height consistently safe
-                pts[scId][1] * 0.1 + groupOffset.z
-            ));
-        }
-    }
-
-    if (waypoints.length < 2) return;
-
-    let currentStep = 0;
-    const flyToNextWaypoint = () => {
-        if (!isCinematicTouring) return;
-
-        const nextIdx = (currentStep + 1) % waypoints.length;
-        const targetPos = waypoints[nextIdx];
-        
-        // Calculate smooth target orientation vector pointing along flight path
-        const lookTarget = new THREE.Vector3().copy(targetPos);
-        if (waypoints.length > 2) {
-            const nextNextIdx = (nextIdx + 1) % waypoints.length;
-            lookTarget.lerp(waypoints[nextNextIdx], 0.5);
-        }
-
-        const duration = 4000; // 4 seconds per node interpolation
-        
-        // Tween Position
-        tourTween = new TWEEN.Tween(camera.position)
-            .to({ x: targetPos.x, y: targetPos.y, z: targetPos.z }, duration)
-            .easing(TWEEN.Easing.Quadratic.InOut)
-            .onUpdate(() => {
-                // Ensure dynamic look logic matches smoothly
-                camera.lookAt(lookTarget);
-            })
-            .onComplete(() => {
-                currentStep = nextIdx;
-                flyToNextWaypoint();
-            })
-            .start();
-    };
-
-    // Smoothly fly to initial waypoint from current position first
-    new TWEEN.Tween(camera.position)
-        .to({ x: waypoints[0].x, y: waypoints[0].y, z: waypoints[0].z }, 2000)
-        .easing(TWEEN.Easing.Cubic.Out)
-        .onComplete(flyToNextWaypoint)
-        .start();
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// HYBRID VIEW SWITCHER: THREE.JS vs PANNELLUM ENGINE
-// ═══════════════════════════════════════════════════════════════════════
-
-function switchPortalMode(targetMode) {
-    if (activePortalMode === targetMode) return;
-    activePortalMode = targetMode;
-
-    const isThree = targetMode === 'three';
-    document.getElementById('tab-three').classList.toggle('active', isThree);
-    document.getElementById('tab-pano').classList.toggle('active', !isThree);
-
-    // Canvas visibility
-    document.getElementById('three-viewer').style.visibility = isThree ? 'visible' : 'hidden';
-    document.getElementById('panorama-viewer').classList.toggle('hidden', isThree);
-
-    // HUD controls arrays
-    document.getElementById('three-controls').classList.toggle('hidden', !isThree);
-    document.getElementById('pano-controls').classList.toggle('hidden', isThree);
-
-    // Help Guides
-    document.getElementById('help-three-orbit').classList.toggle('hidden', !isThree || isFlyMode);
-    document.getElementById('help-three-fly').classList.toggle('hidden', !isThree || !isFlyMode);
-    document.getElementById('help-pano').classList.toggle('hidden', isThree);
-
-    // Badges
-    document.getElementById('hud-mode-badge').textContent = isThree ? '3D Mesh Environment' : '360° Photo Spheres';
-
-    // Refresh Pannellum sizing buffers cleanly on view entry
-    if (!isThree && pannellumViewer) {
-        setTimeout(() => pannellumViewer.resize(), 50);
-        updatePanoStatusUI(sceneOrderList[currentPanoIdx]);
-    } else {
-        document.getElementById('scene-counter').textContent = 'Live Map';
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// ORIGINAL PANNELLUM PHOTO SPHERE INTEGRATION
-// ═══════════════════════════════════════════════════════════════════════
-
-function initPannellumViewer() {
-    const configObj = {
-        default: tourConfig.default || { firstScene: sceneOrderList[0], sceneFadeDuration: 1000 },
-        scenes: tourConfig.scenes
-    };
+// ── Pannellum 360° viewer ─────────────────────────────────────────────────────
+function initPannellum() {
+    if (!tourConfig?.scenes || !Object.keys(tourConfig.scenes).length) return;
+    const firstScene = sceneOrderList[0] || Object.keys(tourConfig.scenes)[0];
 
     try {
-        pannellumViewer = pannellum.viewer('panorama-viewer', configObj);
-        pannellumViewer.on('scenechange', (scId) => {
-            currentPanoIdx = sceneOrderList.indexOf(scId);
-            updatePanoStatusUI(scId);
+        if (pannellumViewer) { try { pannellumViewer.destroy(); } catch {} pannellumViewer = null; }
+
+        pannellumViewer = pannellum.viewer('panorama-viewer', {
+            default: {
+                firstScene,
+                sceneFadeDuration: 700,
+                autoLoad: true,
+                compass: true,
+                autoRotate: -1.5,
+                autoRotateInactivityDelay: 3000,
+            },
+            scenes: tourConfig.scenes,
         });
 
-        // Setup controller buttons cleanly
+        pannellumViewer.on('scenechange', scId => {
+            currentPanoIdx = Math.max(0, sceneOrderList.indexOf(scId));
+            updatePanoUI(scId);
+            drawMinimap();
+        });
+
         document.getElementById('btn-prev').onclick = () => {
             if (currentPanoIdx > 0) pannellumViewer.loadScene(sceneOrderList[--currentPanoIdx]);
         };
         document.getElementById('btn-next').onclick = () => {
-            if (currentPanoIdx < sceneOrderList.length - 1) pannellumViewer.loadScene(sceneOrderList[++currentPanoIdx]);
+            if (currentPanoIdx < sceneOrderList.length - 1)
+                pannellumViewer.loadScene(sceneOrderList[++currentPanoIdx]);
         };
-        
-        let panoAutoTouring = false;
-        let panoTimer = null;
+
+        let autoRunning = false, autoTimer = null;
         document.getElementById('btn-auto-tour').onclick = () => {
-            panoAutoTouring = !panoAutoTouring;
-            document.getElementById('btn-auto-tour').classList.toggle('active', panoAutoTouring);
-            document.getElementById('btn-auto-tour').textContent = panoAutoTouring ? '⏹️ Pause Spheres' : '▶ Play Spheres';
-
-            const stepTour = () => {
-                if (!panoAutoTouring) return;
-                currentPanoIdx = (currentPanoIdx + 1) % sceneOrderList.length;
-                pannellumViewer.loadScene(sceneOrderList[currentPanoIdx]);
-                panoTimer = setTimeout(stepTour, 4000);
-            };
-
-            if (panoAutoTouring) stepTour();
-            else clearTimeout(panoTimer);
+            autoRunning = !autoRunning;
+            const btn = document.getElementById('btn-auto-tour');
+            btn.classList.toggle('active', autoRunning);
+            btn.textContent = autoRunning ? '⏹ Stop Tour' : '▶ Auto Tour';
+            if (autoRunning) {
+                const step = () => {
+                    if (!autoRunning) return;
+                    currentPanoIdx = (currentPanoIdx + 1) % sceneOrderList.length;
+                    pannellumViewer.loadScene(sceneOrderList[currentPanoIdx]);
+                    autoTimer = setTimeout(step, metaData?.auto_tour_delay || 4000);
+                };
+                step();
+            } else {
+                clearTimeout(autoTimer);
+            }
         };
+
+        document.getElementById('btn-back-map')?.addEventListener('click', () => switchMode('three'));
     } catch (err) {
-        console.warn('Pannellum parallel setup omitted context parameters safely.', err);
+        console.warn('Pannellum init error:', err);
     }
 }
 
-function updatePanoStatusUI(scId) {
-    const scene = tourConfig.scenes[scId];
-    const title = scene ? scene.title : scId;
-    document.getElementById('scene-counter').textContent = `${title} (${currentPanoIdx + 1}/${sceneOrderList.length})`;
+// ── Live polling ──────────────────────────────────────────────────────────────
+async function pollLiveUpdates() {
+    const check = async () => {
+        try {
+            const r = await fetch('/api/status');
+            if (!r.ok) return;
+            const status = await r.json();
+
+            const newIds = (status.ready_viewpoints || []).filter(id => !knownViewpointIds.has(id));
+            const tourChanged = status.tour_mtime && status.tour_mtime !== lastTourMtime;
+
+            if (newIds.length || tourChanged) {
+                const fresh = await fetchTourConfig();
+                tourConfig     = fresh;
+                metaData       = fresh._meta || {};
+                sceneOrderList = metaData.scene_order || Object.keys(fresh.scenes || {});
+                if (status.tour_mtime) lastTourMtime = status.tour_mtime;
+
+                const positions = metaData.positions || {};
+                const tex = new THREE.TextureLoader();
+                for (const id of newIds) {
+                    const pos = positions[id];
+                    if (!pos) continue;
+                    const [mx, my] = pos;
+                    const idx = sceneOrderList.indexOf(id);
+                    spawnViewpoint(
+                        id,
+                        new THREE.Vector3((mx - 50) * 0.18, 0, (my - 50) * 0.18),
+                        idx >= 0 ? idx : sceneOrderList.length,
+                        tex
+                    );
+                    knownViewpointIds.add(id);
+                }
+
+                if (Object.keys(tourConfig.scenes || {}).length > 0) initPannellum();
+                drawMinimap();
+                flashLiveBadge();
+
+                const count = sceneOrderList.length;
+                document.getElementById('scene-counter').textContent =
+                    activePortalMode === 'three' ? `${count} viewpoints` :
+                    `${currentPanoIdx + 1} / ${count}`;
+            }
+
+            // Processing stage indicator
+            const pipe = status.pipeline || {};
+            const busy = pipe.stage && pipe.stage !== 'done';
+            const ind  = document.getElementById('processing-indicator');
+            if (ind) {
+                ind.classList.toggle('hidden', !busy);
+                const lbl = ind.querySelector('.proc-label');
+                if (lbl) lbl.textContent = pipe.stage ? pipe.stage.replace(/_/g, ' ') : '';
+            }
+        } catch { /* silent — server may be starting up */ }
+
+        setTimeout(check, 3000);
+    };
+    check();
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// UTILITY HELPERS
-// ═══════════════════════════════════════════════════════════════════════
-
-function onWindowResize() {
-    if (camera && renderer) {
-        camera.aspect = window.innerWidth / window.innerHeight;
-        camera.updateProjectionMatrix();
-        renderer.setSize(window.innerWidth, window.innerHeight);
-    }
-    if (pannellumViewer && activePortalMode === 'pano') {
-        pannellumViewer.resize();
-    }
+function flashLiveBadge() {
+    const b = document.getElementById('live-badge');
+    if (!b) return;
+    b.classList.add('visible');
+    setTimeout(() => b.classList.remove('visible'), 2800);
 }
 
-function updateLoading(percent, statusText) {
-    const bar = document.getElementById('loading-progress');
-    const label = document.getElementById('loading-status');
-    if (bar) bar.style.width = percent + '%';
-    if (label) label.textContent = statusText;
-}
-
-function drawMinimapPath(box) {
-    // Basic graphic map renderer plotting bounding corners inside SVG
+// ── Minimap ───────────────────────────────────────────────────────────────────
+function drawMinimap() {
     const svg = document.getElementById('minimap-svg');
     if (!svg) return;
-    svg.innerHTML = '<rect width="100" height="100" fill="none" stroke="rgba(99,102,241,0.2)" stroke-width="2"/>';
-    // Add visual marker point for boundary logic
-    svg.innerHTML += '<circle cx="50" cy="50" r="6" fill="#34d399" opacity="0.8"><animate attributeName="r" values="5;8;5" dur="2s" repeatCount="indefinite"/></circle>';
+    const positions = metaData?.positions || {};
+    const order     = metaData?.scene_order || sceneOrderList;
+
+    if (!order.length) {
+        svg.innerHTML = '<text x="50" y="54" text-anchor="middle" fill="rgba(99,102,241,0.4)" font-size="7" font-family="sans-serif">No data</text>';
+        return;
+    }
+
+    svg.innerHTML = '';
+    const pts = order.map(id => positions[id]).filter(Boolean);
+
+    // Path line
+    if (pts.length >= 2) {
+        const d = pts.map((p, i) => `${i ? 'L' : 'M'} ${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(' ');
+        svg.innerHTML += `<path d="${d}" stroke="#4338ca" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`;
+    }
+
+    // Dots
+    for (let i = 0; i < order.length; i++) {
+        const p = positions[order[i]];
+        if (!p) continue;
+        const isCur = activePortalMode === 'pano' && i === currentPanoIdx;
+        svg.innerHTML += `<circle cx="${p[0]}" cy="${p[1]}" r="${isCur ? 5 : 2.8}" fill="${i === 0 ? '#34d399' : '#6366f1'}" opacity="${isCur ? 1 : 0.85}"/>`;
+    }
+
+    // Pulse ring on current pano position
+    if (activePortalMode === 'pano') {
+        const p = positions[order[currentPanoIdx]];
+        if (p) svg.innerHTML +=
+            `<circle cx="${p[0]}" cy="${p[1]}" r="5" fill="none" stroke="#34d399" stroke-width="1.2">
+               <animate attributeName="r" values="5;9;5" dur="1.8s" repeatCount="indefinite"/>
+               <animate attributeName="opacity" values="0.9;0.1;0.9" dur="1.8s" repeatCount="indefinite"/>
+             </circle>`;
+    }
+}
+
+// ── Mode switcher ─────────────────────────────────────────────────────────────
+function switchMode(mode) {
+    if (activePortalMode === mode) return;
+    activePortalMode = mode;
+    const is3 = mode === 'three';
+
+    document.getElementById('tab-three').classList.toggle('active', is3);
+    document.getElementById('tab-pano').classList.toggle('active', !is3);
+    document.getElementById('three-viewer').style.visibility = is3 ? 'visible' : 'hidden';
+    const panoDom = document.getElementById('panorama-viewer');
+    panoDom.style.visibility = is3 ? 'hidden' : 'visible';
+    panoDom.style.pointerEvents = is3 ? 'none' : 'auto';
+    document.getElementById('three-controls').classList.toggle('hidden', !is3);
+    document.getElementById('pano-controls').classList.toggle('hidden', is3);
+    document.getElementById('help-three-orbit').classList.toggle('hidden', !is3 || isFlyMode);
+    document.getElementById('help-three-fly').classList.toggle('hidden', !is3 || !isFlyMode);
+    document.getElementById('help-pano').classList.toggle('hidden', is3);
+    document.getElementById('hud-mode-badge').textContent = is3 ? '3D World Map' : '360° Street View';
+
+    if (!is3 && pannellumViewer) {
+        setTimeout(() => pannellumViewer.resize(), 80);
+        updatePanoUI(sceneOrderList[currentPanoIdx]);
+    } else {
+        document.getElementById('scene-counter').textContent = `${sceneOrderList.length} viewpoints`;
+    }
+    drawMinimap();
+}
+
+// ── Controls setup ────────────────────────────────────────────────────────────
+function setupInterface() {
+    document.getElementById('tab-three').addEventListener('click', () => switchMode('three'));
+    document.getElementById('tab-pano').addEventListener('click', () => switchMode('pano'));
+    document.getElementById('btn-mode-orbit').addEventListener('click', () => setNav(false));
+    document.getElementById('btn-mode-fly').addEventListener('click', () => setNav(true));
+    document.getElementById('btn-shade-mesh').addEventListener('click', () => setShading('solid'));
+    document.getElementById('btn-shade-wire').addEventListener('click', () => setShading('wire'));
+    document.getElementById('btn-cinematic').addEventListener('click', toggleCinematic);
+
+    window.addEventListener('keydown', e => { const k = e.key.toLowerCase(); if (k in keys) keys[k] = true; });
+    window.addEventListener('keyup',   e => { const k = e.key.toLowerCase(); if (k in keys) keys[k] = false; });
+
+    const dom = renderer.domElement;
+    dom.addEventListener('mousedown', e => {
+        if (isFlyMode) { mouseLook.drag = true; mouseLook.prevX = e.clientX; mouseLook.prevY = e.clientY; }
+    });
+    window.addEventListener('mouseup', () => { mouseLook.drag = false; });
+    dom.addEventListener('mousemove', e => {
+        if (!isFlyMode || !mouseLook.drag || isCinematicTouring) return;
+        const dx = e.clientX - mouseLook.prevX, dy = e.clientY - mouseLook.prevY;
+        mouseLook.prevX = e.clientX; mouseLook.prevY = e.clientY;
+        mouseLook.yaw  -= dx * 0.003;
+        mouseLook.pitch = Math.max(-Math.PI / 2.1, Math.min(Math.PI / 2.1, mouseLook.pitch - dy * 0.003));
+        const dir = new THREE.Vector3(
+            Math.cos(mouseLook.pitch) * Math.sin(mouseLook.yaw),
+            Math.sin(mouseLook.pitch),
+            Math.cos(mouseLook.pitch) * Math.cos(mouseLook.yaw)
+        );
+        controls.target.copy(camera.position).add(dir);
+        camera.lookAt(controls.target);
+    });
+}
+
+function setNav(fly) {
+    isFlyMode = fly;
+    document.getElementById('btn-mode-orbit').classList.toggle('active', !fly);
+    document.getElementById('btn-mode-fly').classList.toggle('active', fly);
+    document.getElementById('help-three-orbit').classList.toggle('hidden', fly);
+    document.getElementById('help-three-fly').classList.toggle('hidden', !fly);
+    if (fly) {
+        controls.enabled = false;
+        const dir = camera.getWorldDirection(new THREE.Vector3());
+        mouseLook.yaw   = Math.atan2(dir.x, dir.z);
+        mouseLook.pitch = Math.asin(Math.max(-1, Math.min(1, dir.y)));
+    } else {
+        controls.enabled = true;
+        controls.target.copy(camera.position).addScaledVector(camera.getWorldDirection(new THREE.Vector3()), 4);
+        controls.update();
+    }
+}
+
+function setShading(mode) {
+    const wire = mode === 'wire';
+    document.getElementById('btn-shade-mesh').classList.toggle('active', !wire);
+    document.getElementById('btn-shade-wire').classList.toggle('active', wire);
+    mainMeshGroup.traverse(c => {
+        if (!c.isMesh || c.material?.map) return; // skip textured panorama planes
+        if (wire) {
+            c.userData._mat = c.material;
+            c.material = new THREE.MeshBasicMaterial({ color: 0x6366f1, wireframe: true, transparent: true, opacity: 0.28 });
+        } else if (c.userData._mat) {
+            c.material = c.userData._mat;
+        }
+    });
+}
+
+// ── Cinematic tour ────────────────────────────────────────────────────────────
+function toggleCinematic() {
+    isCinematicTouring = !isCinematicTouring;
+    const btn = document.getElementById('btn-cinematic');
+    btn.classList.toggle('active', isCinematicTouring);
+    btn.textContent = isCinematicTouring ? '⏹ Stop Tour' : '🎬 Cinematic Tour';
+    if (isCinematicTouring) {
+        controls.enabled = false;
+        runCinematic();
+    } else {
+        if (!isFlyMode) controls.enabled = true;
+        if (activeTween) activeTween.stop();
+    }
+}
+
+function runCinematic() {
+    const positions = metaData?.positions || {};
+    const order     = metaData?.scene_order || sceneOrderList;
+    const wpts      = order.filter(id => positions[id]).map(id => {
+        const [mx, my] = positions[id];
+        return new THREE.Vector3((mx - 50) * 0.18, 1.6, (my - 50) * 0.18);
+    });
+    if (wpts.length < 2) { toggleCinematic(); return; }
+
+    let step = 0;
+    const fly = () => {
+        if (!isCinematicTouring) return;
+        const nxt  = (step + 1) % wpts.length;
+        const look = wpts[(nxt + 1) % wpts.length];
+        activeTween = new TWEEN.Tween(camera.position)
+            .to({ x: wpts[nxt].x, y: wpts[nxt].y, z: wpts[nxt].z }, 3800)
+            .easing(TWEEN.Easing.Sinusoidal.InOut)
+            .onUpdate(() => camera.lookAt(look))
+            .onComplete(() => { step = nxt; fly(); })
+            .start();
+    };
+    new TWEEN.Tween(camera.position)
+        .to({ x: wpts[0].x, y: wpts[0].y, z: wpts[0].z }, 1800)
+        .easing(TWEEN.Easing.Cubic.Out)
+        .onComplete(fly)
+        .start();
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function updatePanoUI(scId) {
+    const sc = tourConfig?.scenes?.[scId];
+    document.getElementById('scene-counter').textContent =
+        `${sc?.title || scId}  (${currentPanoIdx + 1} / ${sceneOrderList.length})`;
+}
+
+function onResize() {
+    if (camera && renderer) {
+        camera.aspect = innerWidth / innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(innerWidth, innerHeight);
+    }
+    if (pannellumViewer && activePortalMode === 'pano') pannellumViewer.resize();
+}
+
+function updateLoading(pct, text) {
+    const bar = document.getElementById('loading-progress');
+    const lbl = document.getElementById('loading-status');
+    if (bar) bar.style.width = pct + '%';
+    if (lbl) lbl.textContent = text;
 }

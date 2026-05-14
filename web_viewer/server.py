@@ -35,6 +35,11 @@ class ViewerHandler(http.server.SimpleHTTPRequestHandler):
             self.serve_tour_json()
             return
 
+        # API: live pipeline status + ready viewpoint list
+        if path == '/api/status':
+            self.serve_status()
+            return
+
         # Serve panorama images from datasets/panoramas/
         if path.startswith('/panoramas/'):
             self.serve_panorama(path[11:])  # Remove '/panoramas/' prefix
@@ -66,6 +71,41 @@ class ViewerHandler(http.server.SimpleHTTPRequestHandler):
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             self.wfile.write(b'{"scenes": {}}')
+
+    def serve_status(self):
+        """Return pipeline status and list of panoramas that are ready to view."""
+        datasets_dir = Path(self.datasets_dir)
+
+        ready = []
+        pano_dir = datasets_dir / "panoramas"
+        if pano_dir.exists():
+            ready = sorted(f.stem for f in pano_dir.glob("*.jpg"))
+
+        tour_path = datasets_dir / "output" / "tour.json"
+        tour_mtime = tour_path.stat().st_mtime if tour_path.exists() else 0
+
+        pipeline = {}
+        status_path = datasets_dir / "output" / "pipeline_status.json"
+        if status_path.exists():
+            try:
+                with open(status_path) as f:
+                    pipeline = json.load(f)
+            except Exception:
+                pass
+
+        data = json.dumps({
+            "ready_viewpoints": ready,
+            "tour_ready": tour_path.exists(),
+            "tour_mtime": tour_mtime,
+            "pipeline": pipeline,
+        }).encode()
+
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Cache-Control', 'no-cache')
+        self.end_headers()
+        self.wfile.write(data)
 
     def serve_panorama(self, filename):
         """Serve a panorama image from datasets/panoramas/."""

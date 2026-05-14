@@ -11,8 +11,6 @@ Builds a navigable virtual tour from stitched panoramas:
 import json
 import math
 import sys
-import cv2
-import numpy as np
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -167,6 +165,21 @@ def build_tour(viewpoints_dir: str = None, panoramas_dir: str = None,
 
     print(f"  Building tour from {len(viewpoints)} viewpoints")
 
+    # Load stitch report for per-viewpoint coverage angles
+    stitch_coverage = {}
+    stitch_report_path = Path(panoramas_dir) / "stitch_report.json"
+    if stitch_report_path.exists():
+        try:
+            with open(stitch_report_path) as f:
+                raw = json.load(f)
+            stitch_coverage = {
+                r["viewpoint_id"]: r
+                for r in raw
+                if r.get("success") and "coverage_h" in r
+            }
+        except Exception:
+            pass
+
     # Check which panoramas actually exist
     available = []
     for vp in viewpoints:
@@ -220,14 +233,22 @@ def build_tour(viewpoints_dir: str = None, panoramas_dir: str = None,
             }
             hotspots.append(hotspot)
 
+        # Use actual angular coverage if available; avoids black equirect padding
+        sr = stitch_coverage.get(scene_id, {})
+        haov = sr.get("coverage_h", 360.0)
+        vaov = sr.get("coverage_v", 180.0)
+        hfov_default = min(config.PANNELLUM_HFOV, haov - 5) if haov < 355 else config.PANNELLUM_HFOV
+
         scenes[scene_id] = {
             "title": f"Viewpoint {i + 1}",
             "type": "equirectangular",
             "panorama": vp["_pano_url"],
             "autoLoad": True,
-            "hfov": config.PANNELLUM_HFOV,
+            "haov": haov,
+            "vaov": vaov,
+            "hfov": hfov_default,
             "minHfov": config.PANNELLUM_MIN_HFOV,
-            "maxHfov": config.PANNELLUM_MAX_HFOV,
+            "maxHfov": min(config.PANNELLUM_MAX_HFOV, haov),
             "hotSpots": hotspots,
             "compass": config.PANNELLUM_COMPASS,
         }
