@@ -1,44 +1,46 @@
-# E99 Pro — 3D Indoor Mapping & Exploration Pipeline
+# E99 Pro — Street View Indoor Explorer
 
-Complete pipeline that converts FPV drone video into navigable 3D indoor maps.
+Navigate indoor spaces captured by your E99 Pro drone in a Google Street View-like experience.
 
 ```
-Live Video → Frame Extraction → Keyframe Selection → Enhancement → COLMAP SfM/MVS → 3D Viewer
+FPV Video → Frame Extraction → Quality Filter → Enhancement → Viewpoint Clustering → Panorama Stitching → Web Viewer
 ```
+
+## How It Works
+
+1. **Extract** frames from your drone video at 2 FPS
+2. **Filter** out blurry, too dark, or too bright frames
+3. **Enhance** images with CLAHE contrast boost and denoising
+4. **Cluster** frames into viewpoint groups (where the drone paused/rotated)
+5. **Stitch** each viewpoint's frames into a panoramic image
+6. **Build** a navigable tour with hotspot connections between viewpoints
+7. **Serve** the tour in a premium browser-based panorama viewer
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────────────────────┐
-│                           3D MAPPING PIPELINE                                    │
-│                                                                                  │
-│  ┌─────────────┐    ┌──────────────┐    ┌──────────────┐    ┌────────────────┐  │
-│  │  E99 Pro     │    │  Frame       │    │  Keyframe    │    │  Preprocess    │  │
-│  │  FPV Stream  │───▶│  Extraction  │───▶│  Selection   │───▶│  & Enhance    │  │
-│  │  (WiFi)      │    │  (2 FPS)     │    │  blur/motion │    │  CLAHE/denoise│  │
-│  └─────────────┘    └──────────────┘    └──────────────┘    └───────┬────────┘  │
-│                                                                      │           │
-│     ┌──────────────┐    ┌──────────────┐    ┌──────────────┐ ◀──────┘           │
-│     │  COLMAP       │    │  COLMAP       │    │  COLMAP       │                   │
-│     │  Feature Det. │───▶│  Matching     │───▶│  SfM Mapper   │                   │
-│     │  (SIFT 8192)  │    │  (Sequential) │    │  (Sparse PC)  │                   │
-│     └──────────────┘    └──────────────┘    └──────┬───────┘                    │
-│                                                     │                            │
-│     ┌──────────────┐    ┌──────────────┐    ┌──────▼───────┐                    │
-│     │  Indoor       │◀──│  Dense MVS    │◀──│  Undistort   │                    │
-│     │  Optimization │    │  (RTX 3050)   │    │  Images      │                   │
-│     └──────┬───────┘    └──────────────┘    └──────────────┘                    │
-│            │                                                                     │
-│     ┌──────▼───────────────────────────────────────────────────────────┐         │
-│     │                      INTERACTIVE VIEWERS                          │         │
-│     │  ┌─────────────────┐           ┌──────────────────────────┐     │         │
-│     │  │  Open3D Viewer   │           │  Three.js Web Viewer      │     │         │
-│     │  │  WASD + Mouse    │           │  Browser-based (premium)  │     │         │
-│     │  │  Collision detect│           │  Drag & drop PLY/OBJ      │     │         │
-│     │  │  Trajectory viz  │           │  Camera trajectory replay │     │         │
-│     │  └─────────────────┘           └──────────────────────────┘     │         │
-│     └──────────────────────────────────────────────────────────────────┘         │
-└──────────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                   PANORAMIC STREET VIEW PIPELINE                     │
+│                                                                      │
+│  ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────────────┐ │
+│  │  E99 Pro  │   │  Frame   │   │  Quality  │   │  CLAHE / Denoise│ │
+│  │  Video    │──▶│  Extract │──▶│  Filter   │──▶│  Enhancement    │ │
+│  └──────────┘   └──────────┘   └──────────┘   └───────┬──────────┘ │
+│                                                        │             │
+│  ┌──────────────┐   ┌──────────────┐   ┌──────────────▼──────────┐ │
+│  │  Tour Builder │◀──│  Panorama    │◀──│  Viewpoint Clustering  │ │
+│  │  (tour.json)  │   │  Stitching   │   │  (motion-based groups) │ │
+│  └──────┬───────┘   └──────────────┘   └────────────────────────┘ │
+│         │                                                           │
+│  ┌──────▼───────────────────────────────────────────────────────┐  │
+│  │               PANNELLUM WEB VIEWER                            │  │
+│  │  • 360° panorama look-around with mouse drag                  │  │
+│  │  • Clickable hotspot arrows between viewpoints                │  │
+│  │  • Minimap showing your position                              │  │
+│  │  • Auto-tour mode to walk through all viewpoints              │  │
+│  │  • Premium dark glassmorphism UI                              │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -48,10 +50,10 @@ Live Video → Frame Extraction → Keyframe Selection → Enhancement → COLMA
 | Requirement | Details |
 |-------------|---------|
 | **Python** | 3.10+ |
-| **COLMAP** | With CUDA support — [Download](https://github.com/colmap/colmap/releases) |
-| **GPU** | NVIDIA RTX 3050 or better (CUDA) |
-| **ffmpeg** | For video processing — [Download](https://ffmpeg.org/download.html) |
 | **OS** | Windows 10/11 |
+| **GPU** | Not required (optional CUDA acceleration for OpenCV) |
+
+> No COLMAP, no Open3D, no heavy GPU processing needed.
 
 ---
 
@@ -64,23 +66,11 @@ cd e99_3d_mapping
 pip install -r requirements.txt
 ```
 
-### 2. Install COLMAP (CUDA)
-
-1. Download the **Windows CUDA binary** from [COLMAP releases](https://github.com/colmap/colmap/releases)
-2. Extract to a folder (e.g., `C:\COLMAP`)
-3. Add the folder to your system PATH
-4. Verify: `colmap --help`
-
-### 3. Run the Pipeline
+### 2. Run the Pipeline
 
 **From a video file (one command):**
 ```bash
 python pipeline.py run --input path/to/indoor_video.mp4
-```
-
-**Sparse reconstruction only (fast, ~5 minutes):**
-```bash
-python pipeline.py run --input video.mp4 --sparse-only
 ```
 
 **From pre-existing frames:**
@@ -88,49 +78,43 @@ python pipeline.py run --input video.mp4 --sparse-only
 python pipeline.py run --input path/to/frames_directory/
 ```
 
-### 4. View the Result
+### 3. Explore Your Space
 
-**Open3D desktop viewer:**
 ```bash
-python pipeline.py view --input datasets/output/dense_cloud_clean.ply
+python pipeline.py serve
 ```
-
-**Three.js web viewer (recommended for presentations):**
-```bash
-python pipeline.py web
-```
-Opens in your browser at `http://localhost:8080`
+Opens in your browser at `http://localhost:8080` — drag to look around, click arrows to navigate.
 
 ---
 
 ## Individual Stage Commands
 
-Each stage can be run independently for debugging or testing:
+Each stage can be run independently for fine-tuning:
 
 ```bash
 # Capture live FPV stream from drone
 python pipeline.py capture --duration 60
 
-# Extract frames from video
+# Extract frames from video (2 FPS default)
 python pipeline.py extract --input video.mp4 --fps 2.0
 
-# Select keyframes (reject blurry/redundant)
-python pipeline.py keyframes --input datasets/frames/all/
+# Filter out bad frames (blurry, dark, overexposed)
+python pipeline.py filter --input datasets/frames/all/
 
 # Enhance images (CLAHE, denoise, white balance)
-python pipeline.py enhance --input datasets/frames/keyframes/
+python pipeline.py enhance --input datasets/frames/filtered/
 
-# Run COLMAP reconstruction
-python pipeline.py reconstruct --input datasets/preprocessed/
+# Cluster frames into viewpoint groups
+python pipeline.py cluster --input datasets/enhanced/
 
-# Optimize point cloud (remove noise/outliers)
-python pipeline.py optimize --input datasets/colmap/dense_cloud.ply
+# Stitch each viewpoint into a panorama
+python pipeline.py stitch --input datasets/viewpoints/
 
-# Generate mesh from point cloud
-python pipeline.py mesh --input datasets/output/dense_cloud_clean.ply
+# Build the tour configuration
+python pipeline.py tour --viewpoints datasets/viewpoints/ --panoramas datasets/panoramas/
 
-# Export results to output directory
-python pipeline.py export
+# Launch the viewer
+python pipeline.py serve
 ```
 
 ---
@@ -139,120 +123,98 @@ python pipeline.py export
 
 ```
 e99_3d_mapping/
-├── pipeline.py                  # Main entry point (CLI orchestrator)
+├── pipeline.py                  # Main CLI orchestrator
 ├── config.py                    # All configurable parameters
-├── export.py                    # PLY/OBJ/JSON export utilities
-├── requirements.txt
+├── requirements.txt             # Python dependencies
 │
 ├── capture/                     # Stage 1: Video & Frame Extraction
 │   ├── stream_capture.py        #   Live FPV stream recording
 │   ├── frame_extractor.py       #   Video → individual frames
-│   └── keyframe_selector.py     #   Blur/motion/brightness filtering
+│   └── keyframe_selector.py     #   Quality filter + viewpoint clustering
 │
 ├── preprocess/                  # Stage 2: Image Enhancement
 │   └── image_enhancer.py        #   CLAHE, denoising, white balance
 │
-├── reconstruction/              # Stage 3: COLMAP Pipeline
-│   ├── colmap_pipeline.py       #   Full COLMAP CLI wrapper
-│   ├── indoor_optimizer.py      #   Point cloud cleaning & optimization
-│   └── mesh_generator.py        #   Poisson mesh + decimation
+├── stitching/                   # Stage 3: Panorama Stitching
+│   └── panorama_stitcher.py     #   OpenCV stitcher + cylindrical warp
 │
-├── viewer/                      # Stage 4: Interactive Desktop Viewer
-│   ├── point_cloud_viewer.py    #   Open3D WASD+mouse navigation
-│   ├── trajectory_visualizer.py #   Camera pose parsing & visualization
-│   └── collision.py             #   Voxel-based collision detection
+├── tour/                        # Stage 4: Tour Builder
+│   └── tour_builder.py          #   Viewpoint graph + Pannellum config
 │
-├── web_viewer/                  # Stage 5: Web Viewer (Three.js)
-│   ├── index.html               #   Premium dark UI
-│   ├── viewer.js                #   Three.js rendering + controls
-│   ├── style.css                #   Glassmorphism styling
-│   └── server.py                #   HTTP server for viewer + data
+├── web_viewer/                  # Stage 5: Web Viewer
+│   ├── index.html               #   Pannellum panorama viewer
+│   ├── viewer.js                #   Tour controller + minimap
+│   ├── style.css                #   Premium dark UI
+│   └── server.py                #   HTTP server
 │
-└── datasets/                    # Data storage (auto-created, gitignored)
+└── datasets/                    # Data storage (auto-created)
     ├── raw_video/               #   Original recordings
     ├── frames/
     │   ├── all/                 #   All extracted frames
-    │   └── keyframes/           #   Selected keyframes
-    ├── preprocessed/            #   Enhanced frames
-    ├── colmap/                  #   COLMAP workspace
-    │   ├── database.db
-    │   ├── sparse/              #   Sparse reconstruction
-    │   ├── dense/               #   Dense reconstruction
-    │   └── mesh/                #   Generated mesh
-    └── output/                  #   Final exports (PLY, OBJ, JSON)
+    │   └── filtered/            #   Quality-filtered frames
+    ├── enhanced/                #   Enhanced frames
+    ├── viewpoints/              #   Clustered viewpoint groups
+    │   ├── vp_000/
+    │   ├── vp_001/
+    │   └── ...
+    ├── panoramas/               #   Stitched panorama images
+    │   ├── vp_000.jpg
+    │   ├── vp_001.jpg
+    │   └── ...
+    └── output/
+        └── tour.json            #   Pannellum tour configuration
 ```
 
 ---
 
 ## Viewer Controls
 
-### Desktop Viewer (Open3D)
-
-| Key | Action |
-|-----|--------|
-| `W` / `A` / `S` / `D` | Move forward / left / backward / right |
-| `Q` / `E` | Move up / down |
-| `Mouse drag` | Rotate camera |
-| `Scroll` | Adjust movement speed |
-| `Shift` | Sprint (3x speed) |
-| `1` - `9` | Snap to COLMAP camera position |
-| `Space` | Toggle auto-fly along trajectory |
-| `P` | Cycle point size |
-| `T` | Toggle trajectory display |
-| `R` | Reset view |
-| `ESC` | Quit |
-
-### Web Viewer (Three.js)
-
 | Control | Action |
 |---------|--------|
-| `W/A/S/D` | Move |
-| `Q/E` | Up / Down |
-| `Mouse` | Look around (after click) |
-| `Scroll` | Adjust speed |
-| `Shift` | Sprint |
-| `F` | Toggle auto-fly |
-| `ESC` | Release mouse |
+| `Mouse drag` | Look around (pan/tilt) |
+| `Scroll` | Zoom in/out |
+| `← →` Arrow keys | Previous / Next viewpoint |
+| `Space` | Toggle auto-tour |
+| `Home` / `End` | Jump to first / last viewpoint |
+| Click hotspot | Navigate to connected viewpoint |
+| Minimap dot | Jump to any viewpoint |
 
 ---
 
 ## Configuration
 
-All parameters are in `config.py`. Key settings:
+Key settings in `config.py`:
 
 ```python
-# Frame extraction rate (lower = fewer frames, faster reconstruction)
+# Frame extraction rate (higher = more frames, better coverage)
 EXTRACTION_FPS = 2.0
 
-# COLMAP: increase features for low-texture indoor walls
-SIFT_MAX_NUM_FEATURES = 8192
+# Viewpoint clustering — lower threshold = more viewpoints
+CLUSTER_MOTION_THRESHOLD = 12.0
 
-# Dense reconstruction: tuned for RTX 3050 (4GB VRAM)
-DENSE_MAX_IMAGE_SIZE = 1600
-PATCH_MATCH_WINDOW_RADIUS = 5
+# Stitching mode: 'auto', 'opencv', 'cylindrical', 'single'
+STITCH_MODE = "auto"
 
-# Indoor point cloud cleaning
-SOR_NB_NEIGHBORS = 20
-SOR_STD_RATIO = 2.0
-VOXEL_SIZE = 0.01  # 1cm voxels
+# Panorama output resolution
+PANO_OUTPUT_WIDTH = 4096
+
+# Camera FOV (E99 Pro wide-angle)
+CAMERA_FOV_H = 120.0
 ```
 
 ---
 
-## Performance Expectations
+## Performance
 
-| Stage | Time (500 frames) | Bottleneck |
-|-------|-------------------|------------|
-| Frame Extraction | ~30s | IO |
-| Keyframe Selection | ~20s | CPU |
-| Image Enhancement | ~1 min | CPU |
-| Feature Extraction | ~5 min | GPU |
-| Feature Matching | ~3 min | GPU |
-| SfM Mapper | ~2 min | CPU |
-| Dense MVS (RTX 3050) | ~15 min | GPU VRAM |
-| Stereo Fusion | ~2 min | RAM |
-| Indoor Optimization | ~1 min | CPU |
-| **Total (with GPU)** | **~30 min** | |
+| Stage | Time (60s video) | Notes |
+|-------|------------------|-------|
+| Frame Extraction | ~10s | IO-bound |
+| Quality Filter | ~5s | CPU |
+| Enhancement | ~15s | CPU |
+| Viewpoint Clustering | ~5s | CPU |
+| Panorama Stitching | 2-5 min | CPU (heaviest stage) |
+| Tour Building | ~1s | CPU |
+| **Total** | **~3-6 min** | No GPU required |
 
 ---
 
@@ -260,27 +222,22 @@ VOXEL_SIZE = 0.01  # 1cm voxels
 
 | Issue | Solution |
 |-------|----------|
-| `COLMAP not found` | Download from releases, add to PATH. Set `COLMAP_EXECUTABLE` in config.py |
-| `CUDA out of memory` | Reduce `DENSE_MAX_IMAGE_SIZE` in config.py (try 1200 or 800) |
-| `Few images registered` | Try `MATCHER_TYPE = "exhaustive"` in config.py |
-| `Noisy point cloud` | Increase `SOR_STD_RATIO` or decrease `SOR_NB_NEIGHBORS` |
-| `Dense takes too long` | Use `--sparse-only` flag for fast preview |
-| `Blurry reconstruction` | Increase `BLUR_THRESHOLD` for stricter keyframe selection |
-| `Web viewer won't load` | Check browser console (F12). Ensure PLY file isn't too large |
-| `Open3D import error` | `pip install open3d` (requires Python 3.8-3.11) |
+| All frames rejected | Lower `BLUR_THRESHOLD` in config.py (try 20) |
+| Too few viewpoints | Lower `CLUSTER_MOTION_THRESHOLD` (try 8.0) |
+| Stitching failures | Try `STITCH_MODE = "single"` for individual frames |
+| Panoramas look dark | Set `CLAHE_CLIP_LIMIT = 4.0` for stronger enhancement |
+| Web viewer blank | Check browser console (F12). Ensure tour.json exists |
+| Port in use | Change `WEB_SERVER_PORT` or use `--port 9090` |
 
 ---
 
-## Output Formats
+## Tips for Best Results
 
-| Format | File | Description |
-|--------|------|-------------|
-| PLY | `sparse_cloud.ply` | Sparse colored point cloud |
-| PLY | `dense_cloud.ply` | Dense colored point cloud |
-| PLY | `dense_cloud_clean.ply` | Optimized dense cloud (recommended) |
-| PLY | `mesh.ply` | Poisson mesh |
-| OBJ | `mesh.obj` | Mesh (OBJ format) |
-| JSON | `trajectory.json` | Camera positions for web viewer |
+1. **Fly slowly** — the drone should move smoothly, not jerky
+2. **Rotate at stops** — pausing and rotating gives better panoramas
+3. **Good lighting** — indoor spaces need adequate lighting for feature detection
+4. **Overlap** — ensure adjacent frames have 20-30% visual overlap
+5. **Avoid solid walls** — featureless walls are hard to stitch; include furniture/details
 
 ---
 

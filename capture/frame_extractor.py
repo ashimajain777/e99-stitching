@@ -116,7 +116,7 @@ def extract_frames(video_path: str, output_dir: str = None,
     with open(manifest_path, "w") as f:
         json.dump(manifest, f, indent=2)
 
-    print(f"\n  ✅ Extracted {len(extracted)} frames → {output_dir}")
+    print(f"\n  [OK] Extracted {len(extracted)} frames -> {output_dir}")
     print(f"  Manifest: {manifest_path}")
 
     return manifest

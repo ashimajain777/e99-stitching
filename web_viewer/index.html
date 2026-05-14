@@ -3,172 +3,178 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>E99 3D Explorer — Indoor Drone Mapping</title>
-    <meta name="description" content="Interactive 3D point cloud and mesh viewer for drone-captured indoor reconstructions">
+    <title>E99 Coherent World Portal — 3D Mapped Environment</title>
+    <meta name="description" content="Navigate the complete indoor drone video capture as a unified, coherent 3D environment or photo spheres">
+
+    <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+    <!-- Pannellum -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.css">
+    <script src="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.js"></script>
+
+    <!-- Three.js Graphics Stack -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/OBJLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/PLYLoader.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tween.js/18.6.4/tween.umd.js"></script>
+
+    <!-- App styles -->
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <!-- Loading Screen -->
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- LOADING SCREEN                                                  -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
     <div id="loading-screen">
         <div class="loading-content">
             <div class="loading-logo">
                 <svg width="64" height="64" viewBox="0 0 64 64" fill="none">
-                    <circle cx="32" cy="32" r="28" stroke="url(#grad1)" stroke-width="2" fill="none" opacity="0.3"/>
-                    <circle cx="32" cy="32" r="20" stroke="url(#grad1)" stroke-width="1.5" fill="none" opacity="0.5"/>
-                    <circle cx="32" cy="32" r="4" fill="url(#grad1)"/>
-                    <line x1="32" y1="4" x2="32" y2="12" stroke="url(#grad1)" stroke-width="1.5"/>
-                    <line x1="32" y1="52" x2="32" y2="60" stroke="url(#grad1)" stroke-width="1.5"/>
-                    <line x1="4" y1="32" x2="12" y2="32" stroke="url(#grad1)" stroke-width="1.5"/>
-                    <line x1="52" y1="32" x2="60" y2="32" stroke="url(#grad1)" stroke-width="1.5"/>
+                    <circle cx="32" cy="32" r="28" stroke="url(#grad-load)" stroke-width="2" fill="none" opacity="0.3"/>
+                    <circle cx="32" cy="32" r="20" stroke="url(#grad-load)" stroke-width="1.5" fill="none" opacity="0.5">
+                        <animateTransform attributeName="transform" type="rotate" from="0 32 32" to="360 32 32" dur="3s" repeatCount="indefinite"/>
+                    </circle>
+                    <circle cx="32" cy="32" r="4" fill="url(#grad-load)"/>
                     <defs>
-                        <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
-                            <stop offset="0%" style="stop-color:#6366f1"/>
-                            <stop offset="100%" style="stop-color:#8b5cf6"/>
+                        <linearGradient id="grad-load" x1="0%" y1="0%" x2="100%" y2="100%">
+                            <stop offset="0%" style="stop-color:#34d399"/>
+                            <stop offset="100%" style="stop-color:#6366f1"/>
                         </linearGradient>
                     </defs>
                 </svg>
             </div>
-            <h1 class="loading-title">E99 3D Explorer</h1>
-            <p class="loading-subtitle">Indoor Drone Mapping Viewer</p>
+            <h1 class="loading-title">E99 Coherent World</h1>
+            <p class="loading-subtitle">Unified 3D Mapping Portal</p>
             <div class="loading-bar-track">
                 <div class="loading-bar-fill" id="loading-progress"></div>
             </div>
-            <p class="loading-status" id="loading-status">Initializing...</p>
+            <p class="loading-status" id="loading-status">Loading entire reconstructed geometry...</p>
         </div>
     </div>
 
-    <!-- Main Viewer -->
-    <div id="viewer-container">
-        <canvas id="render-canvas"></canvas>
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- MAIN VIEWER PORTAL                                              -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <div id="app-container">
 
-        <!-- Click to Start Overlay -->
-        <div id="start-overlay" class="hidden">
-            <div class="start-content">
-                <div class="start-icon">🎮</div>
-                <h2>Click to Explore</h2>
-                <p>Move with WASD · Look with Mouse</p>
-            </div>
+        <!-- Three.js Coherent World Target -->
+        <div id="three-viewer"></div>
+
+        <!-- Pannellum 360 Photo Sphere Target -->
+        <div id="panorama-viewer" class="hidden"></div>
+
+        <!-- ── PORTAL VIEW SWITCHER (Top Center) ── -->
+        <div id="portal-switcher" class="hud-panel glass">
+            <button class="portal-tab active" id="tab-three" title="Explore the entire environment as one continuous 3D model">
+                <span class="tab-icon">🌐</span>
+                <span class="tab-label">3D Coherent World</span>
+            </button>
+            <button class="portal-tab" id="tab-pano" title="View individual 360° photo spheres with Street View transitions">
+                <span class="tab-icon">📷</span>
+                <span class="tab-label">360° Street View</span>
+            </button>
         </div>
 
-        <!-- HUD - Top Left -->
-        <div id="hud-top-left" class="hud-panel glass hidden">
-            <div class="hud-title">
+        <!-- ── HUD: Top Bar Status ── -->
+        <div id="hud-top" class="hud-panel glass">
+            <div class="hud-top-left">
                 <span class="hud-dot live"></span>
-                E99 3D Explorer
+                <span class="hud-brand" id="hud-mode-badge">3D Mesh Environment</span>
             </div>
-            <div class="hud-stats">
-                <div class="stat">
-                    <span class="stat-label">Points</span>
-                    <span class="stat-value" id="stat-points">—</span>
-                </div>
-                <div class="stat">
-                    <span class="stat-label">FPS</span>
-                    <span class="stat-value" id="stat-fps">—</span>
-                </div>
-                <div class="stat">
-                    <span class="stat-label">Cameras</span>
-                    <span class="stat-value" id="stat-cameras">—</span>
-                </div>
+            <div class="hud-top-right">
+                <span class="scene-counter" id="scene-counter">—</span>
             </div>
         </div>
 
-        <!-- HUD - Bottom Left -->
-        <div id="hud-bottom-left" class="hud-panel glass hidden">
-            <div class="controls-grid">
-                <div class="control-item">
-                    <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>
-                    <span>Move</span>
-                </div>
-                <div class="control-item">
-                    <kbd>Q</kbd><kbd>E</kbd>
-                    <span>Up / Down</span>
-                </div>
-                <div class="control-item">
-                    <kbd>Mouse</kbd>
-                    <span>Look around</span>
-                </div>
-                <div class="control-item">
-                    <kbd>Shift</kbd>
-                    <span>Sprint</span>
-                </div>
-                <div class="control-item">
-                    <kbd>Scroll</kbd>
-                    <span>Speed</span>
-                </div>
-                <div class="control-item">
-                    <kbd>F</kbd>
-                    <span>Auto-fly</span>
-                </div>
-                <div class="control-item">
-                    <kbd>ESC</kbd>
-                    <span>Release mouse</span>
-                </div>
+        <!-- ── HUD: Navigation Controls (bottom center) ── -->
+        <div id="hud-nav" class="hud-panel glass">
+            <!-- Three.js Specific Controls -->
+            <div id="three-controls" class="controls-group">
+                <button class="nav-btn active" id="btn-mode-orbit" title="Orbit Mode: rotate and zoom around the full map">
+                    🔄 Orbit Mode
+                </button>
+                <button class="nav-btn" id="btn-mode-fly" title="First-Person Fly Mode: use W/A/S/D keys + Mouse drag to walk/fly inside">
+                    🚶 Fly / Walk
+                </button>
+                <div class="nav-divider"></div>
+                <button class="nav-btn active" id="btn-shade-mesh" title="Solid Textured Mesh">
+                    🧱 Solid
+                </button>
+                <button class="nav-btn" id="btn-shade-wire" title="X-Ray Wireframe Overlay">
+                    🕸️ Wire
+                </button>
+                <button class="nav-btn" id="btn-shade-pts" title="Toggle Dense Point Cloud Layer">
+                    ✨ Points
+                </button>
+                <div class="nav-divider"></div>
+                <button class="nav-btn accent-btn" id="btn-cinematic" title="Start Automatic Cinematic Fly-Through Tour">
+                    🎬 Cinematic Tour
+                </button>
+            </div>
+
+            <!-- Pannellum Specific Controls (hidden initially) -->
+            <div id="pano-controls" class="controls-group hidden">
+                <button class="nav-btn" id="btn-prev" title="Previous viewpoint (←)">
+                    ◀ Prev Sphere
+                </button>
+                <button class="nav-btn" id="btn-auto-tour" title="Auto-tour photo spheres (Space)">
+                    ▶ Play Spheres
+                </button>
+                <button class="nav-btn" id="btn-next" title="Next viewpoint (→)">
+                    Next Sphere ▶
+                </button>
             </div>
         </div>
 
-        <!-- HUD - Top Right (Settings) -->
-        <div id="hud-top-right" class="hud-panel glass hidden">
-            <div class="settings-title">Settings</div>
-            <div class="setting-row">
-                <label for="point-size-slider">Point Size</label>
-                <input type="range" id="point-size-slider" min="0.5" max="10" step="0.5" value="2">
-                <span id="point-size-value">2.0</span>
+        <!-- ── HUD: Minimap Tracker (bottom right) ── -->
+        <div id="hud-minimap" class="hud-panel glass">
+            <div class="minimap-header">
+                <span>Spatial Map</span>
             </div>
-            <div class="setting-row">
-                <label for="speed-slider">Move Speed</label>
-                <input type="range" id="speed-slider" min="0.01" max="1" step="0.01" value="0.1">
-                <span id="speed-value">0.10</span>
-            </div>
-            <div class="setting-row">
-                <label for="fov-slider">FOV</label>
-                <input type="range" id="fov-slider" min="30" max="120" step="5" value="60">
-                <span id="fov-value">60°</span>
-            </div>
-            <div class="setting-row toggle">
-                <label for="toggle-trajectory">Trajectory</label>
-                <input type="checkbox" id="toggle-trajectory" checked>
-            </div>
-            <div class="setting-row toggle">
-                <label for="toggle-cameras">Cameras</label>
-                <input type="checkbox" id="toggle-cameras" checked>
-            </div>
+            <svg id="minimap-svg" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet">
+                <!-- Path lines and dynamic position dots -->
+            </svg>
         </div>
 
-        <!-- HUD - Position -->
-        <div id="hud-position" class="hud-panel glass mini hidden">
-            <span>X: <span id="pos-x">0.00</span></span>
-            <span>Y: <span id="pos-y">0.00</span></span>
-            <span>Z: <span id="pos-z">0.00</span></span>
-        </div>
-    </div>
-
-    <!-- File Input Modal (initial) -->
-    <div id="file-modal" class="hidden">
-        <div class="modal-content glass">
-            <h2>Load 3D Model</h2>
-            <p>Load a PLY point cloud or OBJ mesh from the reconstruction pipeline.</p>
-            <div class="file-drop-zone" id="file-drop-zone">
-                <div class="drop-icon">📁</div>
-                <p>Drag & drop a PLY/OBJ file here</p>
-                <p class="drop-subtitle">or click to browse</p>
-                <input type="file" id="file-input" accept=".ply,.obj" hidden>
+        <!-- ── HUD: User Help / Controls Guide (bottom left) ── -->
+        <div id="hud-help" class="hud-panel glass">
+            <!-- Dynamic guide based on active view -->
+            <div id="help-three-orbit" class="controls-grid">
+                <div class="control-item"><kbd>L-Click + Drag</kbd><span>Rotate World</span></div>
+                <div class="control-item"><kbd>R-Click + Drag</kbd><span>Pan Camera</span></div>
+                <div class="control-item"><kbd>Scroll</kbd><span>Zoom In / Out</span></div>
+                <div class="control-item"><kbd>Mode Switch</kbd><span>Fly inside</span></div>
             </div>
-            <div class="modal-divider">
-                <span>or</span>
+            <div id="help-three-fly" class="controls-grid hidden">
+                <div class="control-item"><kbd>W / S</kbd><span>Move Forward/Back</span></div>
+                <div class="control-item"><kbd>A / D</kbd><span>Strafe Left/Right</span></div>
+                <div class="control-item"><kbd>Drag</kbd><span>Look Around</span></div>
+                <div class="control-item"><kbd>Q / E</kbd><span>Move Up/Down</span></div>
             </div>
-            <div class="url-input-row">
-                <input type="text" id="model-url" placeholder="Enter model URL (e.g., /data/dense_cloud.ply)">
-                <button id="load-url-btn" class="btn-primary">Load</button>
-            </div>
-            <div id="sample-models" class="sample-models">
-                <!-- Will be populated by server -->
+            <div id="help-pano" class="controls-grid hidden">
+                <div class="control-item"><kbd>Drag</kbd><span>Look around</span></div>
+                <div class="control-item"><kbd>Scroll</kbd><span>Zoom</span></div>
+                <div class="control-item"><kbd>← →</kbd><span>Prev / Next</span></div>
+                <div class="control-item"><kbd>Space</kbd><span>Auto-tour</span></div>
             </div>
         </div>
     </div>
 
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- ERROR SCREEN                                                    -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <div id="error-screen" class="hidden">
+        <div class="error-content">
+            <div class="error-icon">⚠️</div>
+            <h2>Geometry Load Failed</h2>
+            <p id="error-message">Could not load the coherent 3D mesh model.</p>
+            <code>Verify that final_mesh.obj exists in datasets/output/</code>
+        </div>
+    </div>
+
     <script src="viewer.js"></script>
 </body>
 </html>

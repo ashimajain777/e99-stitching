@@ -1,35 +1,40 @@
 """
-3D Mapping Pipeline - Main Orchestrator
-=========================================
-One-command execution from video -> 3D model -> interactive viewer.
+Panoramic Street View Pipeline - Main Orchestrator
+=====================================================
+One-command execution from drone video -> panoramic street view tour.
 
 Usage:
     # Full pipeline from video file
     python pipeline.py run --input video.mp4
 
-    # Full pipeline from pre-extracted frames
-    python pipeline.py run --frames path/to/frames/
-
     # Individual stages
     python pipeline.py extract --input video.mp4
-    python pipeline.py keyframes --input datasets/frames/all/
-    python pipeline.py enhance --input datasets/frames/keyframes/
-    python pipeline.py reconstruct --input datasets/preprocessed/
-    python pipeline.py optimize --input datasets/colmap/dense_cloud.ply
-    python pipeline.py view --input datasets/output/dense_cloud_clean.ply
-    python pipeline.py web
+    python pipeline.py filter --input datasets/frames/all/
+    python pipeline.py enhance --input datasets/frames/filtered/
+    python pipeline.py cluster --input datasets/enhanced/
+    python pipeline.py stitch --input datasets/viewpoints/
+    python pipeline.py tour --input datasets/panoramas/
+    python pipeline.py serve
 
     # Live drone capture
     python pipeline.py capture --duration 60
-
-    # Sparse-only (fast preview)
-    python pipeline.py run --input video.mp4 --sparse-only
 """
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
+
+# Fix Windows cp1252 encoding — force UTF-8 for all console output
+# Must happen BEFORE colorama wraps stdout
+if sys.platform == 'win32':
+    os.environ['PYTHONIOENCODING'] = 'utf-8'
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
 
 # Ensure project root is in path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -37,7 +42,7 @@ import config
 
 try:
     from colorama import init as colorama_init, Fore, Style
-    colorama_init()
+    colorama_init(wrap=False)  # Don't wrap stdout — avoids encoding issues
     GREEN = Fore.GREEN
     RED = Fore.RED
     CYAN = Fore.CYAN
@@ -53,14 +58,14 @@ def banner():
     print(f"""
 {CYAN}{BRIGHT}+==============================================================+
 |                                                              |
-|   ######  #####   #####      #####  ####                     |
-|   ##     ##   ## ##   ##         ## ##  ##                    |
-|   ####    ######  ######     ##### ##  ##                    |
-|   ##          ##      ##         ## ##  ##                    |
-|   ######  #####   #####     #####  ####                      |
+|   ######  #####   #####      #####  ##  ##                   |
+|   ##     ##   ## ##   ##     ##     ##  ##                   |
+|   ####    ######  ######     #####  ##  ##                   |
+|   ##          ##      ##         ##  ## ##                   |
+|   ######  #####   #####      #####    ##                    |
 |                                                              |
-|   3D Mapping & Exploration Pipeline                          |
-|   Indoor Drone Reconstruction using COLMAP                   |
+|   Street View -- Indoor Drone Explorer                       |
+|   Panoramic Tour from FPV Video                              |
 |                                                              |
 +==============================================================+{RESET}
 """)
@@ -110,74 +115,46 @@ def cmd_extract(args):
     extract_frames(args.input, args.output, args.fps, args.max_frames)
 
 
-def cmd_keyframes(args):
-    """Select keyframes from extracted frames."""
-    from capture.keyframe_selector import select_keyframes
-    print_stage("Keyframe Selection")
-    select_keyframes(args.input, args.output, args.blur)
+def cmd_filter(args):
+    """Filter frames by quality."""
+    from capture.keyframe_selector import filter_frames
+    print_stage("Frame Quality Filter")
+    filter_frames(args.input, args.output, args.blur)
 
 
 def cmd_enhance(args):
-    """Enhance images for reconstruction."""
+    """Enhance images for stitching."""
     from preprocess.image_enhancer import enhance_images
     print_stage("Image Enhancement")
     enhance_images(args.input, args.output)
 
 
-def cmd_reconstruct(args):
-    """Run COLMAP reconstruction."""
-    from reconstruction.colmap_pipeline import run_full_pipeline
-    print_stage("COLMAP 3D Reconstruction")
-    run_full_pipeline(
-        args.input, args.workspace,
-        skip_dense=args.sparse_only,
-        skip_mesh=args.no_mesh,
-    )
+def cmd_cluster(args):
+    """Cluster frames into viewpoints."""
+    from capture.keyframe_selector import cluster_into_viewpoints
+    print_stage("Viewpoint Clustering")
+    cluster_into_viewpoints(args.input, args.output, args.motion)
 
 
-def cmd_optimize(args):
-    """Optimize point cloud for indoor scenes."""
-    from reconstruction.indoor_optimizer import optimize_point_cloud
-    print_stage("Indoor Optimization")
-    optimize_point_cloud(args.input, args.output)
+def cmd_stitch(args):
+    """Stitch panoramas for each viewpoint."""
+    from stitching.panorama_stitcher import stitch_all_viewpoints
+    print_stage("Panorama Stitching")
+    stitch_all_viewpoints(args.input, args.output)
 
 
-def cmd_mesh(args):
-    """Generate mesh from point cloud."""
-    from reconstruction.mesh_generator import simple_mesh_from_ply, poisson_mesh_colmap
-    print_stage("Mesh Generation")
-    
-    if args.workspace:
-        poisson_mesh_colmap(args.workspace, args.output)
-    else:
-        max_points = args.decimate if args.decimate else 100000
-        simple_mesh_from_ply(args.input, args.output, max_points)
+def cmd_tour(args):
+    """Build tour configuration."""
+    from tour.tour_builder import build_tour
+    print_stage("Tour Builder")
+    build_tour(args.viewpoints, args.panoramas, args.output)
 
 
-def cmd_view(args):
-    """Launch Open3D interactive viewer."""
-    from viewer.point_cloud_viewer import launch_viewer
-    print_stage("Interactive 3D Viewer")
-
-    path = Path(args.input)
-    if path.suffix.lower() in {".obj", ".stl", ".off"}:
-        launch_viewer(mesh_path=str(path), workspace=args.workspace)
-    else:
-        launch_viewer(ply_path=str(path), workspace=args.workspace)
-
-
-def cmd_web(args):
-    """Launch Three.js web viewer."""
+def cmd_serve(args):
+    """Launch web viewer."""
     from web_viewer.server import start_server
-    print_stage("Web Viewer")
+    print_stage("Street View Server")
     start_server(args.port, args.data)
-
-
-def cmd_export(args):
-    """Export final results."""
-    from export import export_results
-    print_stage("Export Results")
-    export_results(args.workspace, args.output)
 
 
 # ================================================================
@@ -185,22 +162,18 @@ def cmd_export(args):
 # ================================================================
 
 def cmd_run(args):
-    """Run the complete pipeline: video -> 3D model -> viewer."""
+    """Run the complete pipeline: video -> panoramic street view."""
     banner()
 
-    total_stages = 6  # extract, keyframes, enhance, reconstruct, optimize, export
-    if args.sparse_only:
-        total_stages = 5
-
+    total_stages = 6
     overall_start = time.time()
     results = {}
 
     # ── Determine input type ──
     input_path = Path(args.input)
-    images_dir = None
 
     if input_path.is_file():
-        # Input is a video file -> extract frames
+        # ── Stage 1: Extract frames from video ──
         print_stage("Frame Extraction", 1, total_stages)
         from capture.frame_extractor import extract_frames
         config.FRAMES_ALL_DIR.mkdir(parents=True, exist_ok=True)
@@ -212,79 +185,88 @@ def cmd_run(args):
         )
         results["extraction"] = manifest
 
-        # Keyframe selection
-        print_stage("Keyframe Selection", 2, total_stages)
-        from capture.keyframe_selector import select_keyframes
-        config.FRAMES_KEYFRAMES_DIR.mkdir(parents=True, exist_ok=True)
-
-        kf_stats = select_keyframes(
-            str(config.FRAMES_ALL_DIR),
-            str(config.FRAMES_KEYFRAMES_DIR),
-        )
-        results["keyframes"] = kf_stats
-
-        images_dir = config.FRAMES_KEYFRAMES_DIR
+        frames_dir = config.FRAMES_ALL_DIR
 
     elif input_path.is_dir():
-        # Input is a directory of frames - skip extraction
+        # Input is already frames
         print_info(f"Input is a directory: {input_path}")
-        print_info("Skipping extraction and keyframe selection.")
-        images_dir = input_path
+        print_info("Skipping frame extraction.")
+        frames_dir = input_path
+        total_stages = 5
     else:
         print_error(f"Input not found: {input_path}")
         return
 
-    # ── Preprocessing ──
-    stage_offset = 3 if input_path.is_file() else 1
-    print_stage("Image Enhancement", stage_offset, total_stages)
+    # ── Stage 2: Filter bad frames ──
+    stage = 2 if input_path.is_file() else 1
+    print_stage("Frame Quality Filter", stage, total_stages)
+    from capture.keyframe_selector import filter_frames
+    config.FRAMES_FILTERED_DIR.mkdir(parents=True, exist_ok=True)
+
+    filter_stats = filter_frames(
+        str(frames_dir),
+        str(config.FRAMES_FILTERED_DIR),
+    )
+    results["filtering"] = filter_stats
+
+    if filter_stats["accepted"] == 0:
+        print_error("No frames passed quality filter! Try lowering BLUR_THRESHOLD in config.py")
+        return
+
+    # ── Stage 3: Enhance frames ──
+    stage += 1
+    print_stage("Image Enhancement", stage, total_stages)
     from preprocess.image_enhancer import enhance_images
-    config.PREPROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+    config.ENHANCED_DIR.mkdir(parents=True, exist_ok=True)
 
     enhance_stats = enhance_images(
-        str(images_dir),
-        str(config.PREPROCESSED_DIR),
+        str(config.FRAMES_FILTERED_DIR),
+        str(config.ENHANCED_DIR),
     )
     results["enhancement"] = enhance_stats
 
-    # Use preprocessed images for reconstruction
-    recon_input = config.PREPROCESSED_DIR
+    # ── Stage 4: Cluster into viewpoints ──
+    stage += 1
+    print_stage("Viewpoint Clustering", stage, total_stages)
+    from capture.keyframe_selector import cluster_into_viewpoints
 
-    # ── COLMAP Reconstruction ──
-    print_stage("COLMAP 3D Reconstruction", stage_offset + 1, total_stages)
-    from reconstruction.colmap_pipeline import run_full_pipeline
-
-    recon_results = run_full_pipeline(
-        str(recon_input),
-        str(config.COLMAP_WORKSPACE),
-        skip_dense=args.sparse_only,
-        skip_mesh=True,  # We'll do meshing after optimization
+    cluster_report = cluster_into_viewpoints(
+        str(config.ENHANCED_DIR),
+        str(config.VIEWPOINTS_DIR),
     )
-    results["reconstruction"] = recon_results
+    results["clustering"] = cluster_report
 
-    if not recon_results.get("success"):
-        print_error("Reconstruction failed!")
+    if cluster_report["num_viewpoints"] == 0:
+        print_error("No viewpoints created! Check your video has enough frames.")
         return
 
-    # ── Indoor Optimization ──
-    # Find the best available point cloud
-    ply_to_optimize = None
-    if "dense_ply" in recon_results and Path(recon_results["dense_ply"]).exists():
-        ply_to_optimize = recon_results["dense_ply"]
-    elif "sparse_ply" in recon_results and Path(recon_results["sparse_ply"]).exists():
-        ply_to_optimize = recon_results["sparse_ply"]
+    # ── Stage 5: Stitch panoramas ──
+    stage += 1
+    print_stage("Panorama Stitching", stage, total_stages)
+    from stitching.panorama_stitcher import stitch_all_viewpoints
 
-    if ply_to_optimize:
-        print_stage("Indoor Optimization", stage_offset + 2, total_stages)
-        from reconstruction.indoor_optimizer import optimize_point_cloud
+    stitch_results = stitch_all_viewpoints(
+        str(config.VIEWPOINTS_DIR),
+        str(config.PANORAMAS_DIR),
+    )
+    results["stitching"] = stitch_results
 
-        opt_stats = optimize_point_cloud(ply_to_optimize)
-        results["optimization"] = opt_stats
+    successes = sum(1 for r in stitch_results if r.get("success"))
+    if successes == 0:
+        print_error("No panoramas were created! Check frame quality.")
+        return
 
-    # ── Export ──
-    print_stage("Export Results", stage_offset + 3, total_stages)
-    from export import export_results
-    export_data = export_results()
-    results["export"] = export_data
+    # ── Stage 6: Build tour ──
+    stage += 1
+    print_stage("Tour Builder", stage, total_stages)
+    from tour.tour_builder import build_tour
+
+    tour = build_tour(
+        str(config.VIEWPOINTS_DIR),
+        str(config.PANORAMAS_DIR),
+        str(config.TOUR_JSON_PATH),
+    )
+    results["tour"] = tour
 
     # ── Summary ──
     total_time = time.time() - overall_start
@@ -292,29 +274,23 @@ def cmd_run(args):
     print(f"\n{GREEN}{BRIGHT}{'=' * 60}")
     print(f"  PIPELINE COMPLETE")
     print(f"{'=' * 60}{RESET}")
-    print(f"  Total time: {total_time:.1f}s ({total_time/60:.1f} min)")
-
-    if recon_results.get("registered_images"):
-        print(f"  Registered images: {recon_results['registered_images']}/"
-              f"{recon_results.get('total_images', '?')}")
-
-    if "optimization" in results:
-        opt = results["optimization"]
-        print(f"  Final point cloud: {opt.get('final_points', '?')} points")
-
-    print(f"\n  Output directory: {config.OUTPUT_DIR}")
+    print(f"  Total time: {total_time:.1f}s ({total_time / 60:.1f} min)")
+    print(f"  Panoramas created: {successes}/{len(stitch_results)}")
+    print(f"  Tour scenes: {len(tour.get('scenes', {}))}")
 
     # List output files
-    if config.OUTPUT_DIR.exists():
-        for f in sorted(config.OUTPUT_DIR.iterdir()):
-            if f.is_file():
-                size = f.stat().st_size
-                size_str = f"{size/1024/1024:.1f}MB" if size > 1024*1024 else f"{size/1024:.0f}KB"
-                print(f"    > {f.name} ({size_str})")
+    print(f"\n  Output files:")
+    for d in [config.PANORAMAS_DIR, config.OUTPUT_DIR]:
+        if d.exists():
+            for f in sorted(d.iterdir()):
+                if f.is_file():
+                    size = f.stat().st_size
+                    size_str = f"{size / 1024 / 1024:.1f}MB" if size > 1024 * 1024 else f"{size / 1024:.0f}KB"
+                    print(f"    > {f.name} ({size_str})")
 
-    print(f"\n  {CYAN}To view the reconstruction:{RESET}")
-    print(f"    python pipeline.py view --input datasets/output/dense_cloud_clean.ply")
-    print(f"    python pipeline.py web")
+    print(f"\n  {CYAN}To explore your space:{RESET}")
+    print(f"    python pipeline.py serve")
+    print(f"    -> Opens http://localhost:{config.WEB_SERVER_PORT}")
     print()
 
 
@@ -324,39 +300,33 @@ def cmd_run(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="E99 3D Mapping and Exploration Pipeline",
+        description="E99 Street View — Indoor Drone Explorer",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Commands:
-  run          Full pipeline: video -> 3D model
+  run          Full pipeline: video -> panoramic tour
   capture      Record live FPV stream from drone
   extract      Extract frames from video
-  keyframes    Select best keyframes
-  enhance      Enhance images for reconstruction
-  reconstruct  Run COLMAP reconstruction
-  optimize     Clean and optimize point cloud
-  mesh         Generate mesh from point cloud
-  view         Launch Open3D interactive viewer
-  web          Launch Three.js web viewer
-  export       Export final results
+  filter       Remove blurry/dark/bright frames
+  enhance      Enhance images (CLAHE, denoise)
+  cluster      Group frames into viewpoints
+  stitch       Stitch panoramas per viewpoint
+  tour         Build Pannellum tour.json
+  serve        Launch web viewer
 
 Examples:
   python pipeline.py run --input video.mp4
-  python pipeline.py run --input video.mp4 --sparse-only
   python pipeline.py run --input path/to/images/
-  python pipeline.py view --input datasets/output/dense_cloud_clean.ply
-  python pipeline.py web
+  python pipeline.py serve
         """,
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Pipeline command")
 
     # --- run ---
-    p_run = subparsers.add_parser("run", help="Full pipeline: video -> 3D model")
+    p_run = subparsers.add_parser("run", help="Full pipeline: video -> tour")
     p_run.add_argument("--input", required=True, help="Input video file or frames directory")
     p_run.add_argument("--fps", type=float, help="Frame extraction rate")
-    p_run.add_argument("--sparse-only", action="store_true", help="Skip dense reconstruction")
-    p_run.add_argument("--no-mesh", action="store_true", help="Skip mesh generation")
 
     # --- capture ---
     p_cap = subparsers.add_parser("capture", help="Record live FPV stream")
@@ -370,51 +340,38 @@ Examples:
     p_ext.add_argument("--fps", type=float, help="Extraction rate (FPS)")
     p_ext.add_argument("--max-frames", type=int, help="Max frames to extract")
 
-    # --- keyframes ---
-    p_kf = subparsers.add_parser("keyframes", help="Select keyframes")
-    p_kf.add_argument("--input", help="Input frames directory")
-    p_kf.add_argument("--output", help="Output keyframes directory")
-    p_kf.add_argument("--blur", type=float, help="Blur threshold")
+    # --- filter ---
+    p_flt = subparsers.add_parser("filter", help="Filter bad frames")
+    p_flt.add_argument("--input", help="Input frames directory")
+    p_flt.add_argument("--output", help="Output directory")
+    p_flt.add_argument("--blur", type=float, help="Blur threshold")
 
     # --- enhance ---
     p_enh = subparsers.add_parser("enhance", help="Enhance images")
     p_enh.add_argument("--input", help="Input images directory")
     p_enh.add_argument("--output", help="Output directory")
 
-    # --- reconstruct ---
-    p_rec = subparsers.add_parser("reconstruct", help="Run COLMAP reconstruction")
-    p_rec.add_argument("--input", required=True, help="Input images directory")
-    p_rec.add_argument("--workspace", help="COLMAP workspace directory")
-    p_rec.add_argument("--sparse-only", action="store_true", help="Skip dense reconstruction")
-    p_rec.add_argument("--no-mesh", action="store_true", help="Skip mesh generation")
+    # --- cluster ---
+    p_cls = subparsers.add_parser("cluster", help="Cluster frames into viewpoints")
+    p_cls.add_argument("--input", help="Input enhanced frames directory")
+    p_cls.add_argument("--output", help="Output viewpoints directory")
+    p_cls.add_argument("--motion", type=float, help="Motion threshold")
 
-    # --- optimize ---
-    p_opt = subparsers.add_parser("optimize", help="Optimize point cloud")
-    p_opt.add_argument("--input", required=True, help="Input PLY file")
-    p_opt.add_argument("--output", help="Output PLY file")
+    # --- stitch ---
+    p_stc = subparsers.add_parser("stitch", help="Stitch panoramas")
+    p_stc.add_argument("--input", help="Viewpoints directory")
+    p_stc.add_argument("--output", help="Output panoramas directory")
 
-    # --- mesh ---
-    p_mesh = subparsers.add_parser("mesh", help="Generate mesh from point cloud")
-    p_mesh.add_argument("--input", required=True, help="Input PLY point cloud")
-    p_mesh.add_argument("--output", help="Output mesh path")
-    p_mesh.add_argument("--depth", type=int, default=9, help="Poisson depth")
-    p_mesh.add_argument("--decimate", type=int, help="Target triangle count")
-    p_mesh.add_argument("--workspace", help="COLMAP workspace for poisson mesher")
+    # --- tour ---
+    p_tour = subparsers.add_parser("tour", help="Build tour configuration")
+    p_tour.add_argument("--viewpoints", help="Viewpoints directory")
+    p_tour.add_argument("--panoramas", help="Panoramas directory")
+    p_tour.add_argument("--output", help="Output tour.json path")
 
-    # --- view ---
-    p_view = subparsers.add_parser("view", help="Launch Open3D viewer")
-    p_view.add_argument("--input", required=True, help="PLY or mesh file")
-    p_view.add_argument("--workspace", help="COLMAP workspace for trajectory")
-
-    # --- web ---
-    p_web = subparsers.add_parser("web", help="Launch web viewer")
-    p_web.add_argument("--port", type=int, help="Server port")
-    p_web.add_argument("--data", help="Datasets directory")
-
-    # --- export ---
-    p_exp = subparsers.add_parser("export", help="Export results")
-    p_exp.add_argument("--workspace", help="COLMAP workspace")
-    p_exp.add_argument("--output", help="Output directory")
+    # --- serve ---
+    p_srv = subparsers.add_parser("serve", help="Launch web viewer")
+    p_srv.add_argument("--port", type=int, help="Server port")
+    p_srv.add_argument("--data", help="Datasets directory")
 
     args = parser.parse_args()
 
@@ -428,14 +385,12 @@ Examples:
         "run": cmd_run,
         "capture": cmd_capture,
         "extract": cmd_extract,
-        "keyframes": cmd_keyframes,
+        "filter": cmd_filter,
         "enhance": cmd_enhance,
-        "reconstruct": cmd_reconstruct,
-        "optimize": cmd_optimize,
-        "mesh": cmd_mesh,
-        "view": cmd_view,
-        "web": cmd_web,
-        "export": cmd_export,
+        "cluster": cmd_cluster,
+        "stitch": cmd_stitch,
+        "tour": cmd_tour,
+        "serve": cmd_serve,
     }
 
     try:

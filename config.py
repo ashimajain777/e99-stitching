@@ -1,8 +1,8 @@
 """
-3D Mapping Pipeline — Central Configuration
-=============================================
-All configurable parameters for capture, reconstruction, and viewing.
-Tuned for E99 Pro drone FPV footage + NVIDIA RTX 3050 GPU.
+Panoramic Street View Pipeline — Central Configuration
+=======================================================
+All configurable parameters for capture, stitching, tour building, and viewing.
+Tuned for E99 Pro drone FPV footage.
 """
 
 from pathlib import Path
@@ -15,14 +15,12 @@ PROJECT_ROOT = Path(__file__).parent
 DATASETS_DIR = PROJECT_ROOT / "datasets"
 RAW_VIDEO_DIR = DATASETS_DIR / "raw_video"
 FRAMES_ALL_DIR = DATASETS_DIR / "frames" / "all"
-FRAMES_KEYFRAMES_DIR = DATASETS_DIR / "frames" / "keyframes"
-PREPROCESSED_DIR = DATASETS_DIR / "preprocessed"
-COLMAP_WORKSPACE = DATASETS_DIR / "colmap"
-COLMAP_DB_PATH = COLMAP_WORKSPACE / "database.db"
-COLMAP_SPARSE_DIR = COLMAP_WORKSPACE / "sparse"
-COLMAP_DENSE_DIR = COLMAP_WORKSPACE / "dense"
-COLMAP_MESH_DIR = COLMAP_WORKSPACE / "mesh"
+FRAMES_FILTERED_DIR = DATASETS_DIR / "frames" / "filtered"
+ENHANCED_DIR = DATASETS_DIR / "enhanced"
+VIEWPOINTS_DIR = DATASETS_DIR / "viewpoints"
+PANORAMAS_DIR = DATASETS_DIR / "panoramas"
 OUTPUT_DIR = DATASETS_DIR / "output"
+TOUR_JSON_PATH = OUTPUT_DIR / "tour.json"
 
 # =============================================================================
 # STREAM CAPTURE (for live drone FPV)
@@ -46,15 +44,12 @@ FRAME_FORMAT = "jpg"
 FRAME_QUALITY = 95            # JPEG quality (1-100)
 
 # =============================================================================
-# KEYFRAME SELECTION
+# FRAME FILTERING (quality gate)
 # =============================================================================
 
 BLUR_THRESHOLD = 50.0         # Laplacian variance — below = blurry → reject
-MOTION_MIN_THRESHOLD = 5.0    # Pixel diff — below = too similar → skip
-MOTION_MAX_THRESHOLD = 80.0   # Pixel diff — above = too different → skip
 BRIGHTNESS_MIN = 25.0         # Mean intensity — below = too dark
 BRIGHTNESS_MAX = 240.0        # Mean intensity — above = too bright
-MIN_KEYFRAMES = 30            # Keep at least this many even if quality is low
 
 # =============================================================================
 # PREPROCESSING
@@ -73,79 +68,63 @@ DENOISE_STRENGTH = 7
 WHITE_BALANCE_ENABLED = True
 
 # =============================================================================
-# COLMAP RECONSTRUCTION
+# VIEWPOINT CLUSTERING
 # =============================================================================
+# Groups consecutive frames into "viewpoints" (stops on the tour).
+# A new viewpoint starts when the camera has moved significantly.
 
-import os
-COLMAP_EXECUTABLE = r"C:\Users\Ashima Jain\Downloads\COLMAP-3.9.1-windows-cuda\COLMAP-3.9.1-windows-cuda\bin\colmap.exe"
-
-# Fix for DLL missing errors: add COLMAP internal lib folder to system PATH for this Python session
-COLMAP_LIB_DIR = r"C:\Users\Ashima Jain\Downloads\COLMAP-3.9.1-windows-cuda\COLMAP-3.9.1-windows-cuda\lib"
-os.environ['PATH'] = COLMAP_LIB_DIR + os.pathsep + os.environ.get('PATH', '')
-
-# Feature extraction (SIFT)
-SIFT_MAX_IMAGE_SIZE = 3200
-SIFT_MAX_NUM_FEATURES = 8192
-SIFT_SINGLE_CAMERA = True
-
-# Feature matching
-MATCHER_TYPE = "sequential"    # 'sequential' or 'exhaustive'
-SEQUENTIAL_OVERLAP = 15        # Adjacent frames to match
-SEQUENTIAL_LOOP_DETECTION = True
-
-# Fallback: if sequential registers < this fraction of images → exhaustive
-EXHAUSTIVE_FALLBACK_THRESHOLD = 0.5
-
-# SfM Mapper
-MAPPER_MIN_NUM_MATCHES = 15
-
-# Dense reconstruction (tuned for RTX 3050 — 4GB VRAM)
-DENSE_USE_GPU = True
-DENSE_GPU_INDEX = 0
-DENSE_MAX_IMAGE_SIZE = 1600    # Downscale for dense to fit 4GB VRAM
-PATCH_MATCH_WINDOW_RADIUS = 5
-PATCH_MATCH_NUM_SAMPLES = 15
-PATCH_MATCH_NUM_ITERATIONS = 5
-PATCH_MATCH_GEOM_CONSISTENCY = True
-
-# Stereo fusion
-FUSION_MIN_NUM_PIXELS = 5
-FUSION_MAX_REPROJ_ERROR = 2.0
+CLUSTER_MOTION_THRESHOLD = 12.0   # Mean pixel diff — above = new viewpoint
+CLUSTER_MIN_FRAMES = 3            # Minimum frames per viewpoint (else merge)
+CLUSTER_MAX_FRAMES = 30           # Maximum frames per viewpoint (else split)
+CLUSTER_MIN_VIEWPOINTS = 5        # Minimum total viewpoints to produce
+CLUSTER_MAX_VIEWPOINTS = 40       # Maximum total viewpoints
 
 # =============================================================================
-# INDOOR OPTIMIZATION
+# PANORAMA STITCHING
 # =============================================================================
 
-SOR_NB_NEIGHBORS = 20         # Statistical outlier removal: neighbors
-SOR_STD_RATIO = 2.0           # Statistical outlier removal: std multiplier
-ROR_NB_POINTS = 5             # Radius outlier removal: min neighbors (relaxed)
-ROR_RADIUS = 0.5              # Radius outlier removal: search radius (relaxed — scene-scale dependent)
-VOXEL_SIZE = 0.02             # Voxel downsampling: 2cm voxels (less aggressive)
+STITCH_MODE = "auto"              # 'auto' | 'opencv' | 'cylindrical' | 'single'
+                                   # auto = try opencv stitcher, fallback to
+                                   # cylindrical, fallback to single best frame
+
+STITCH_CONFIDENCE = 0.3           # Stitcher confidence threshold (lower = more lenient)
+STITCH_WARP_TYPE = "cylindrical"  # Fallback warp type: 'cylindrical' | 'spherical'
+
+# Panorama output
+PANO_OUTPUT_WIDTH = 4096          # Width of equirectangular output (height = width/2)
+PANO_QUALITY = 92                 # JPEG quality for panorama images
+PANO_FORMAT = "jpg"
+
+# Camera intrinsics estimate (for cylindrical warp fallback)
+# If unknown, set to None and we'll estimate from image dimensions
+CAMERA_FOCAL_LENGTH = None        # Focal length in pixels (None = auto-estimate)
+CAMERA_FOV_H = 120.0              # Horizontal FOV in degrees (E99 Pro wide-angle)
 
 # =============================================================================
-# 3D VIEWER (Open3D Python Viewer)
+# TOUR BUILDER
 # =============================================================================
 
-VIEWER_MOVE_SPEED = 0.05
-VIEWER_FAST_MULTIPLIER = 3.0
-VIEWER_MOUSE_SENSITIVITY = 0.003
-VIEWER_FOV = 60.0
-VIEWER_POINT_SIZE = 2.0
-VIEWER_BG_COLOR = [0.05, 0.05, 0.08]
-VIEWER_SHOW_TRAJECTORY = True
-VIEWER_SHOW_CAMERAS = True
-VIEWER_WINDOW_WIDTH = 1600
-VIEWER_WINDOW_HEIGHT = 900
+HOTSPOT_MAX_CONNECTIONS = 3       # Max links per viewpoint (prev, next, + 1 branch)
+SCENE_FADE_DURATION = 1000        # Transition fade time in ms
+SCENE_AUTO_ROTATE_SPEED = 0.5     # Auto-rotate speed (degrees/sec, 0 = off)
 
-# Collision
-COLLISION_ENABLED = True
-COLLISION_RADIUS = 0.05
-COLLISION_GRID_SIZE = 0.02
+# Auto-tour
+AUTO_TOUR_DELAY = 4000            # Milliseconds at each viewpoint during auto-tour
+
+# Minimap
+MINIMAP_ENABLED = True
+MINIMAP_SIZE = 200                # Minimap panel size in pixels
 
 # =============================================================================
 # WEB VIEWER
 # =============================================================================
 
 WEB_SERVER_PORT = 8080
-WEB_POINT_BUDGET = 2_000_000
 WEB_AUTO_OPEN_BROWSER = True
+
+# Pannellum settings
+PANNELLUM_HFOV = 100              # Default horizontal field of view
+PANNELLUM_MIN_HFOV = 50           # Minimum zoom (most zoomed in)
+PANNELLUM_MAX_HFOV = 120          # Maximum zoom (most zoomed out)
+PANNELLUM_AUTO_LOAD = True        # Auto-load first scene
+PANNELLUM_COMPASS = True          # Show compass indicator

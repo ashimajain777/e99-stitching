@@ -1,857 +1,639 @@
 /**
- * E99 3D Explorer — Three.js Viewer
- * ===================================
- * Interactive point cloud and mesh viewer with first-person navigation.
- * Loads PLY/OBJ files and provides WASD + mouse camera controls.
+ * E99 Coherent World Portal — Unified 3D Graphics Controller
+ * ============================================================
+ * Implements a state-of-the-art Three.js rendering environment for the mapped 3D mesh
+ * alongside the original Pannellum 360 photo sphere engine. Features smooth orbit/fly navigation,
+ * custom lighting arrays, cinematic camera tours, and hybrid mode switching.
  */
 
-// ═══════════════════════════════════════════════════════════════
-// State
-// ═══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════
+// GLOBAL STATE
+// ═══════════════════════════════════════════════════════════════════════
 
-const state = {
-    scene: null,
-    camera: null,
-    renderer: null,
-    clock: null,
-    pointCloud: null,
-    mesh: null,
-    trajectoryLine: null,
-    cameraFrustums: null,
+// Portal Modes: 'three' (3D Coherent World) vs 'pano' (360° Photo Spheres)
+let activePortalMode = 'three';
 
-    // Navigation
-    moveSpeed: 0.1,
-    sprintMultiplier: 3.0,
-    mouseSensitivity: 0.002,
-    euler: { yaw: 0, pitch: 0 },
-    velocity: new THREE.Vector3(),
-    keys: {},
-    isPointerLocked: false,
+// Three.js Core
+let scene, camera, renderer, controls;
+let mainMeshGroup = null;
+let pointCloudGroup = null;
+let isFlyMode = false;
 
-    // Auto-fly
-    autoFly: false,
-    autoFlyT: 0,
-    autoFlyPositions: [],
+// Lighting & Shading Cache
+let meshMaterial = null;
+let wireframeMaterial = null;
 
-    // Stats
-    pointCount: 0,
-    cameraCount: 0,
-    fpsFrames: 0,
-    fpsTime: 0,
-    currentFPS: 0,
+// Navigation States (Fly Mode)
+const keysPressed = { w: false, a: false, s: false, d: false, q: false, e: false };
+let mouseLook = { isDragging: false, prevX: 0, prevY: 0, yaw: 0, pitch: 0 };
+const flySpeed = 0.15;
 
-    // Settings
-    pointSize: 2.0,
-    showTrajectory: true,
-    showCameras: true,
-};
+// Cinematic Tour State
+let isCinematicTouring = false;
+let tourTween = null;
 
-// ═══════════════════════════════════════════════════════════════
-// Initialization
-// ═══════════════════════════════════════════════════════════════
+// Tour Config Cache
+let tourConfig = null;
+let metaData = null;
+let pannellumViewer = null;
+let currentPanoIdx = 0;
+let sceneOrderList = [];
 
-function init() {
-    console.log('[E99 Viewer] Initializing...');
-    const canvas = document.getElementById('render-canvas');
+// ═══════════════════════════════════════════════════════════════════════
+// INITIALIZATION PORTAL
+// ═══════════════════════════════════════════════════════════════════════
 
-    // Scene
-    state.scene = new THREE.Scene();
-    state.scene.background = new THREE.Color(0x0a0a12);
-    state.scene.fog = new THREE.FogExp2(0x0a0a12, 0.002);
+document.addEventListener('DOMContentLoaded', initPortal);
 
-    // Camera — large far plane for big models
-    state.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.001, 10000);
-    state.camera.position.set(0, 2, 5);
+async function initPortal() {
+    updateLoading(10, 'Fetching spatial configuration...');
 
-    // Renderer
-    state.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
-    state.renderer.setSize(window.innerWidth, window.innerHeight);
-    state.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    if (state.renderer.outputEncoding !== undefined) {
-        state.renderer.outputEncoding = THREE.sRGBEncoding;
-    }
-
-    // Clock
-    state.clock = new THREE.Clock();
-
-    // Ambient light
-    const ambient = new THREE.AmbientLight(0xffffff, 0.8);
-    state.scene.add(ambient);
-
-    // Hemisphere light (sky/ground)
-    const hemi = new THREE.HemisphereLight(0x87ceeb, 0x362d59, 0.4);
-    state.scene.add(hemi);
-
-    // Grid helper (subtle)
-    const grid = new THREE.GridHelper(50, 50, 0x1a1a30, 0x12121f);
-    grid.material.opacity = 0.3;
-    grid.material.transparent = true;
-    state.scene.add(grid);
-
-    // Event listeners
-    setupControls();
-    setupSettings();
-    window.addEventListener('resize', onResize);
-
-    // Show file modal
-    showFileModal();
-
-    // Start render loop
-    animate();
-    console.log('[E99 Viewer] Init complete');
-}
-
-// ═══════════════════════════════════════════════════════════════
-// Controls
-// ═══════════════════════════════════════════════════════════════
-
-function setupControls() {
-    const canvas = document.getElementById('render-canvas');
-
-    // Pointer Lock
-    const requestPointerLock = () => {
-        if (!state.isPointerLocked) {
-            canvas.requestPointerLock();
-        }
-    };
-    
-    canvas.addEventListener('click', requestPointerLock);
-    
-    const overlay = document.getElementById('start-overlay');
-    overlay.addEventListener('click', requestPointerLock);
-
-    document.addEventListener('pointerlockchange', () => {
-        state.isPointerLocked = document.pointerLockElement === canvas;
-        const overlay = document.getElementById('start-overlay');
-        if (state.isPointerLocked) {
-            overlay.classList.add('hidden');
-        } else {
-            overlay.classList.remove('hidden');
-        }
-    });
-
-    // Mouse movement
-    document.addEventListener('mousemove', (e) => {
-        if (!state.isPointerLocked) return;
-
-        state.euler.yaw -= e.movementX * state.mouseSensitivity;
-        state.euler.pitch -= e.movementY * state.mouseSensitivity;
-
-        // Clamp pitch
-        state.euler.pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, state.euler.pitch));
-    });
-
-    // Keyboard
-    document.addEventListener('keydown', (e) => {
-        state.keys[e.key.toLowerCase()] = true;
-
-        // Toggle auto-fly
-        if (e.key.toLowerCase() === 'f') {
-            state.autoFly = !state.autoFly;
-            state.autoFlyT = 0;
-            console.log('Auto-fly:', state.autoFly ? 'ON' : 'OFF');
-        }
-    });
-
-    document.addEventListener('keyup', (e) => {
-        state.keys[e.key.toLowerCase()] = false;
-    });
-
-    // Scroll wheel — adjust speed
-    document.addEventListener('wheel', (e) => {
-        state.moveSpeed *= e.deltaY > 0 ? 0.9 : 1.1;
-        state.moveSpeed = Math.max(0.005, Math.min(2.0, state.moveSpeed));
-        document.getElementById('speed-slider').value = state.moveSpeed;
-        document.getElementById('speed-value').textContent = state.moveSpeed.toFixed(2);
-    });
-}
-
-// ═══════════════════════════════════════════════════════════════
-// Settings UI
-// ═══════════════════════════════════════════════════════════════
-
-function setupSettings() {
-    // Point size
-    document.getElementById('point-size-slider').addEventListener('input', (e) => {
-        state.pointSize = parseFloat(e.target.value);
-        document.getElementById('point-size-value').textContent = state.pointSize.toFixed(1);
-        if (state.pointCloud && state.pointCloud.material) {
-            const baseSize = state.basePointSize || 0.005;
-            state.pointCloud.material.size = baseSize * (state.pointSize / 2.0);
-        }
-    });
-
-    // Speed
-    document.getElementById('speed-slider').addEventListener('input', (e) => {
-        state.moveSpeed = parseFloat(e.target.value);
-        document.getElementById('speed-value').textContent = state.moveSpeed.toFixed(2);
-    });
-
-    // FOV
-    document.getElementById('fov-slider').addEventListener('input', (e) => {
-        const fov = parseInt(e.target.value);
-        document.getElementById('fov-value').textContent = fov + '°';
-        state.camera.fov = fov;
-        state.camera.updateProjectionMatrix();
-    });
-
-    // Trajectory toggle
-    document.getElementById('toggle-trajectory').addEventListener('change', (e) => {
-        state.showTrajectory = e.target.checked;
-        if (state.trajectoryLine) state.trajectoryLine.visible = state.showTrajectory;
-    });
-
-    // Cameras toggle
-    document.getElementById('toggle-cameras').addEventListener('change', (e) => {
-        state.showCameras = e.target.checked;
-        if (state.cameraFrustums) state.cameraFrustums.visible = state.showCameras;
-    });
-}
-
-// ═══════════════════════════════════════════════════════════════
-// File Loading
-// ═══════════════════════════════════════════════════════════════
-
-function showFileModal() {
-    document.getElementById('file-modal').classList.remove('hidden');
-    document.getElementById('loading-screen').classList.add('fade-out');
-
-    const dropZone = document.getElementById('file-drop-zone');
-    const fileInput = document.getElementById('file-input');
-
-    // Click to browse
-    dropZone.addEventListener('click', () => fileInput.click());
-
-    // File input change
-    fileInput.addEventListener('change', (e) => {
-        if (e.target.files.length > 0) {
-            loadLocalFile(e.target.files[0]);
-        }
-    });
-
-    // Drag and drop
-    dropZone.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        dropZone.classList.add('drag-over');
-    });
-
-    dropZone.addEventListener('dragleave', () => {
-        dropZone.classList.remove('drag-over');
-    });
-
-    dropZone.addEventListener('drop', (e) => {
-        e.preventDefault();
-        dropZone.classList.remove('drag-over');
-        if (e.dataTransfer.files.length > 0) {
-            loadLocalFile(e.dataTransfer.files[0]);
-        }
-    });
-
-    // URL load button
-    document.getElementById('load-url-btn').addEventListener('click', () => {
-        const url = document.getElementById('model-url').value.trim();
-        if (url) loadFromURL(url);
-    });
-
-    // Check for available models from server
-    fetchAvailableModels();
-}
-
-function fetchAvailableModels() {
-    fetch('/api/models')
-        .then(r => r.json())
-        .then(models => {
-            const container = document.getElementById('sample-models');
-            if (models && models.length > 0) {
-                const title = document.createElement('p');
-                title.style.cssText = 'font-size: 12px; color: var(--text-muted); margin-bottom: 8px;';
-                title.textContent = 'Available reconstructions:';
-                container.appendChild(title);
-
-                models.forEach(model => {
-                    const btn = document.createElement('button');
-                    btn.className = 'sample-model-btn';
-                    btn.textContent = `📦 ${model.name} (${model.size})`;
-                    btn.addEventListener('click', () => loadFromURL(model.url));
-                    container.appendChild(btn);
-                });
-            }
-        })
-        .catch(() => {
-            // Server not available — that's OK, user can still drag & drop
-        });
-}
-
-function loadLocalFile(file) {
-    const ext = file.name.split('.').pop().toLowerCase();
-    showLoading(`Loading ${file.name}...`);
-
-    const reader = new FileReader();
-    reader.onprogress = (e) => {
-        if (e.lengthComputable) {
-            updateLoadingProgress(Math.round(e.loaded / e.total * 100));
-        }
-    };
-
-    reader.onload = (e) => {
-        if (ext === 'ply') {
-            parsePLY(e.target.result, file.name);
-        } else if (ext === 'obj') {
-            parseOBJ(e.target.result, file.name);
-        } else {
-            alert('Unsupported format. Use PLY or OBJ.');
-            hideLoading();
-        }
-    };
-
-    if (ext === 'ply') {
-        reader.readAsArrayBuffer(file);
-    } else {
-        reader.readAsText(file);
-    }
-}
-
-function loadFromURL(url) {
-    showLoading(`Loading from ${url}...`);
-
-    const ext = url.split('.').pop().toLowerCase().split('?')[0];
-
-    const xhr = new XMLHttpRequest();
-    xhr.open('GET', url, true);
-    xhr.responseType = ext === 'ply' ? 'arraybuffer' : 'text';
-
-    xhr.onprogress = (e) => {
-        if (e.lengthComputable) {
-            updateLoadingProgress(Math.round(e.loaded / e.total * 100));
-        }
-    };
-
-    xhr.onload = () => {
-        if (xhr.status === 200) {
-            if (ext === 'ply') {
-                parsePLY(xhr.response, url.split('/').pop());
-            } else if (ext === 'obj') {
-                parseOBJ(xhr.response, url.split('/').pop());
-            }
-        } else {
-            alert(`Failed to load: ${xhr.statusText}`);
-            hideLoading();
-        }
-    };
-
-    xhr.onerror = () => {
-        alert('Network error loading file.');
-        hideLoading();
-    };
-
-    xhr.send();
-}
-
-// ═══════════════════════════════════════════════════════════════
-// PLY Parser
-// ═══════════════════════════════════════════════════════════════
-
-function parsePLY(arrayBuffer, filename) {
-    updateLoadingStatus('Parsing PLY...');
-
+    // 1. Fetch JSON configuration
     try {
-        const bytes = new Uint8Array(arrayBuffer);
-
-        // Find header end
-        let headerEnd = 0;
-        const decoder = new TextDecoder();
-        const headerText = decoder.decode(bytes.subarray(0, Math.min(bytes.length, 4096)));
-        const endHeaderIdx = headerText.indexOf('end_header');
-        if (endHeaderIdx === -1) {
-            throw new Error('Invalid PLY: no end_header found');
-        }
-
-        // Find the newline after end_header
-        headerEnd = endHeaderIdx + 'end_header'.length;
-        while (headerEnd < bytes.length && bytes[headerEnd] !== 10) headerEnd++;
-        headerEnd++; // skip the newline
-
-        const header = headerText.substring(0, endHeaderIdx + 'end_header'.length);
-        const lines = header.split('\n');
-
-        let vertexCount = 0;
-        let isBinary = false;
-        let isLittleEndian = true;
-        const properties = [];
-
-        for (const line of lines) {
-            const parts = line.trim().split(/\s+/);
-            if (parts[0] === 'format') {
-                if (parts[1] === 'binary_little_endian') { isBinary = true; isLittleEndian = true; }
-                else if (parts[1] === 'binary_big_endian') { isBinary = true; isLittleEndian = false; }
-            } else if (parts[0] === 'element' && parts[1] === 'vertex') {
-                vertexCount = parseInt(parts[2]);
-            } else if (parts[0] === 'property') {
-                properties.push({ type: parts[1], name: parts[2] });
-            }
-        }
-
-        updateLoadingStatus(`Parsing ${vertexCount.toLocaleString()} vertices...`);
-        updateLoadingProgress(50);
-
-        const positions = new Float32Array(vertexCount * 3);
-        const colors = new Float32Array(vertexCount * 3);
-        let hasColors = false;
-
-        // Find property indices
-        const propMap = {};
-        properties.forEach((p, i) => { propMap[p.name] = i; });
-
-        if (isBinary) {
-            const dataView = new DataView(arrayBuffer, headerEnd);
-            let offset = 0;
-
-            // Calculate stride
-            let stride = 0;
-            for (const prop of properties) {
-                if (prop.type === 'float' || prop.type === 'float32' || prop.type === 'int' || prop.type === 'int32') stride += 4;
-                else if (prop.type === 'double' || prop.type === 'float64') stride += 8;
-                else if (prop.type === 'uchar' || prop.type === 'uint8' || prop.type === 'char' || prop.type === 'int8') stride += 1;
-                else if (prop.type === 'short' || prop.type === 'int16' || prop.type === 'ushort' || prop.type === 'uint16') stride += 2;
-            }
-
-            for (let i = 0; i < vertexCount; i++) {
-                let propOffset = 0;
-                for (let pi = 0; pi < properties.length; pi++) {
-                    const prop = properties[pi];
-                    let value;
-                    if (prop.type === 'float' || prop.type === 'float32') {
-                        value = dataView.getFloat32(offset + propOffset, isLittleEndian);
-                        propOffset += 4;
-                    } else if (prop.type === 'double' || prop.type === 'float64') {
-                        value = dataView.getFloat64(offset + propOffset, isLittleEndian);
-                        propOffset += 8;
-                    } else if (prop.type === 'uchar' || prop.type === 'uint8') {
-                        value = dataView.getUint8(offset + propOffset);
-                        propOffset += 1;
-                    } else if (prop.type === 'char' || prop.type === 'int8') {
-                        value = dataView.getInt8(offset + propOffset);
-                        propOffset += 1;
-                    } else if (prop.type === 'short' || prop.type === 'int16') {
-                        value = dataView.getInt16(offset + propOffset, isLittleEndian);
-                        propOffset += 2;
-                    } else if (prop.type === 'ushort' || prop.type === 'uint16') {
-                        value = dataView.getUint16(offset + propOffset, isLittleEndian);
-                        propOffset += 2;
-                    } else if (prop.type === 'int' || prop.type === 'int32') {
-                        value = dataView.getInt32(offset + propOffset, isLittleEndian);
-                        propOffset += 4;
-                    } else {
-                        propOffset += 4; // default
-                        continue;
-                    }
-
-                    if (prop.name === 'x') positions[i * 3] = value;
-                    else if (prop.name === 'y') positions[i * 3 + 1] = value;
-                    else if (prop.name === 'z') positions[i * 3 + 2] = value;
-                    else if (prop.name === 'red') { colors[i * 3] = value / 255; hasColors = true; }
-                    else if (prop.name === 'green') { colors[i * 3 + 1] = value / 255; hasColors = true; }
-                    else if (prop.name === 'blue') { colors[i * 3 + 2] = value / 255; hasColors = true; }
-                }
-                offset += stride;
-
-                // Progress
-                if (i % 100000 === 0) {
-                    updateLoadingProgress(50 + Math.round(i / vertexCount * 40));
-                }
-            }
-        } else {
-            // ASCII PLY
-            const dataText = decoder.decode(bytes.subarray(headerEnd));
-            const dataLines = dataText.trim().split('\n');
-
-            for (let i = 0; i < Math.min(vertexCount, dataLines.length); i++) {
-                const values = dataLines[i].trim().split(/\s+/).map(Number);
-
-                if ('x' in propMap) positions[i * 3] = values[propMap['x']];
-                if ('y' in propMap) positions[i * 3 + 1] = values[propMap['y']];
-                if ('z' in propMap) positions[i * 3 + 2] = values[propMap['z']];
-                if ('red' in propMap) { colors[i * 3] = values[propMap['red']] / 255; hasColors = true; }
-                if ('green' in propMap) { colors[i * 3 + 1] = values[propMap['green']] / 255; hasColors = true; }
-                if ('blue' in propMap) { colors[i * 3 + 2] = values[propMap['blue']] / 255; hasColors = true; }
-            }
-        }
-
-        updateLoadingProgress(90);
-        updateLoadingStatus('Building point cloud...');
-
-        createPointCloud(positions, hasColors ? colors : null, vertexCount, filename);
+        const response = await fetch('/api/tour');
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        tourConfig = await response.json();
+        metaData = tourConfig._meta || {};
+        sceneOrderList = metaData.scene_order || Object.keys(tourConfig.scenes || {});
     } catch (err) {
-        console.error('PLY parse error:', err);
-        alert('Failed to parse PLY: ' + err.message);
-        hideLoading();
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// OBJ Parser (basic)
-// ═══════════════════════════════════════════════════════════════
-
-function parseOBJ(text, filename) {
-    updateLoadingStatus('Parsing OBJ...');
-
-    const vertices = [];
-    const faces = [];
-    const lines = text.split('\n');
-
-    for (const line of lines) {
-        const parts = line.trim().split(/\s+/);
-        if (parts[0] === 'v') {
-            vertices.push(parseFloat(parts[1]), parseFloat(parts[2]), parseFloat(parts[3]));
-        } else if (parts[0] === 'f') {
-            const indices = parts.slice(1).map(p => parseInt(p.split('/')[0]) - 1);
-            if (indices.length === 3) {
-                faces.push(indices[0], indices[1], indices[2]);
-            } else if (indices.length === 4) {
-                faces.push(indices[0], indices[1], indices[2]);
-                faces.push(indices[0], indices[2], indices[3]);
-            }
-        }
+        console.warn('Could not load tour.json via API, proceeding with default mesh loader.', err);
     }
 
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+    updateLoading(30, 'Initializing Three.js Graphics Context...');
 
-    if (faces.length > 0) {
-        geometry.setIndex(faces);
-        geometry.computeVertexNormals();
+    // 2. Setup Three.js Context
+    setupThreeEnvironment();
 
-        const material = new THREE.MeshStandardMaterial({
-            color: 0x8888cc,
-            roughness: 0.6,
-            metalness: 0.2,
-            side: THREE.DoubleSide,
-        });
+    updateLoading(50, 'Loading Reconstructed 3D Geometry...');
 
-        state.mesh = new THREE.Mesh(geometry, material);
-        state.scene.add(state.mesh);
-        state.pointCount = vertices.length / 3;
+    // 3. Load Main 3D Mesh
+    await loadCoherent3DMesh();
+
+    updateLoading(85, 'Initializing Hybrid UI Engines...');
+
+    // 4. Setup Optional Pannellum Engine in Background
+    if (tourConfig && tourConfig.scenes && Object.keys(tourConfig.scenes).length > 0) {
+        initPannellumViewer();
     } else {
-        // No faces — treat as point cloud
-        createPointCloud(new Float32Array(vertices), null, vertices.length / 3, filename);
-        return;
+        document.getElementById('tab-pano').style.display = 'none'; // hide if no pano scenes
     }
 
-    centerCamera();
-    finishLoading(filename);
-}
+    // 5. Setup UI Event Listeners
+    setupPortalInterface();
 
-// ═══════════════════════════════════════════════════════════════
-// Point Cloud Creation
-// ═══════════════════════════════════════════════════════════════
+    updateLoading(100, 'Environment Ready!');
 
-function createPointCloud(positions, colors, count, filename) {
-    console.log(`[E99 Viewer] Creating point cloud: ${count} points`);
-
-    // Remove any existing point cloud
-    if (state.pointCloud) {
-        state.scene.remove(state.pointCloud);
-        state.pointCloud.geometry.dispose();
-        state.pointCloud.material.dispose();
-    }
-
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-
-    if (colors) {
-        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    }
-
-    geometry.computeBoundingSphere();
-    geometry.computeBoundingBox();
-
-    const bbox = geometry.boundingBox;
-    const bsphere = geometry.boundingSphere;
-    console.log(`[E99 Viewer] Bounding box:`, bbox.min, bbox.max);
-    console.log(`[E99 Viewer] Center:`, bsphere.center, `Radius:`, bsphere.radius);
-
-    // Scale point size relative to model size
-    const modelRadius = bsphere.radius || 1;
-    const autoPointSize = Math.max(0.002, modelRadius * 0.005);
-    state.basePointSize = autoPointSize;
-
-    const material = new THREE.PointsMaterial({
-        size: autoPointSize * (state.pointSize / 2.0),
-        sizeAttenuation: true,
-        vertexColors: !!colors,
-        color: colors ? 0xffffff : 0x6366f1,
-        transparent: true,
-        opacity: 0.95,
-    });
-
-    state.pointCloud = new THREE.Points(geometry, material);
-    state.scene.add(state.pointCloud);
-
-    state.pointCount = count;
-
-    centerCamera();
-    finishLoading(filename);
-}
-
-function centerCamera() {
-    // Find bounding box of loaded geometry
-    let box = new THREE.Box3();
-
-    if (state.pointCloud) {
-        state.pointCloud.geometry.computeBoundingBox();
-        box = state.pointCloud.geometry.boundingBox.clone();
-    } else if (state.mesh) {
-        state.mesh.geometry.computeBoundingBox();
-        box = state.mesh.geometry.boundingBox.clone();
-    }
-
-    const center = new THREE.Vector3();
-    box.getCenter(center);
-    const size = new THREE.Vector3();
-    box.getSize(size);
-
-    const maxDim = Math.max(size.x, size.y, size.z) || 1;
-    console.log(`[E99 Viewer] Model center:`, center, `size:`, size, `maxDim:`, maxDim);
-
-    // Position camera to see the whole scene — pull back enough
-    state.camera.position.set(
-        center.x,
-        center.y + maxDim * 0.4,
-        center.z + maxDim * 1.2
-    );
-
-    // Update camera to see distant objects
-    state.camera.near = maxDim * 0.0001;
-    state.camera.far = maxDim * 100;
-    state.camera.updateProjectionMatrix();
-
-    // Adjust fog to match scene scale
-    state.scene.fog = new THREE.FogExp2(0x0a0a12, 0.5 / maxDim);
-
-    state.moveSpeed = maxDim * 0.008;
-    const speedSlider = document.getElementById('speed-slider');
-    speedSlider.max = Math.max(1, maxDim * 0.05).toFixed(2);
-    speedSlider.value = state.moveSpeed;
-    document.getElementById('speed-value').textContent = state.moveSpeed.toFixed(3);
-
-    // Look at center — compute yaw/pitch from camera to center
-    const dir = new THREE.Vector3().subVectors(center, state.camera.position).normalize();
-    state.euler.yaw = Math.atan2(dir.x, dir.z);
-    state.euler.pitch = Math.asin(dir.y);
-
-    console.log(`[E99 Viewer] Camera at:`, state.camera.position, `looking yaw:`, state.euler.yaw, `pitch:`, state.euler.pitch);
-}
-
-// ═══════════════════════════════════════════════════════════════
-// Loading UI
-// ═══════════════════════════════════════════════════════════════
-
-function showLoading(msg) {
-    document.getElementById('file-modal').classList.add('hidden');
-    document.getElementById('loading-screen').classList.remove('fade-out');
-    updateLoadingStatus(msg);
-    updateLoadingProgress(10);
-}
-
-function hideLoading() {
-    const ls = document.getElementById('loading-screen');
-    ls.classList.add('fade-out');
-    // Fully remove after transition so it doesn't block the canvas
+    // 6. Reveal World
     setTimeout(() => {
-        ls.style.pointerEvents = 'none';
-        ls.classList.add('hidden');
-    }, 700);
-}
-
-function updateLoadingProgress(percent) {
-    document.getElementById('loading-progress').style.width = percent + '%';
-}
-
-function updateLoadingStatus(msg) {
-    document.getElementById('loading-status').textContent = msg;
-}
-
-function finishLoading(filename) {
-    updateLoadingProgress(100);
-    updateLoadingStatus('Ready!');
-
-    setTimeout(() => {
-        hideLoading();
-
-        // Show HUD panels
-        document.getElementById('hud-top-left').classList.remove('hidden');
-        document.getElementById('hud-bottom-left').classList.remove('hidden');
-        document.getElementById('hud-top-right').classList.remove('hidden');
-        document.getElementById('hud-position').classList.remove('hidden');
-        document.getElementById('start-overlay').classList.remove('hidden');
-
-        // Update stats
-        document.getElementById('stat-points').textContent = formatNumber(state.pointCount);
-        document.getElementById('stat-cameras').textContent = state.cameraCount || '—';
+        const loader = document.getElementById('loading-screen');
+        if (loader) loader.classList.add('fade-out');
+        onWindowResize(); // Force perfect sizing
     }, 500);
 }
 
-function formatNumber(n) {
-    if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
-    if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
-    return n.toString();
+// ═══════════════════════════════════════════════════════════════════════
+// THREE.JS ENVIRONMENT SETUP
+// ═══════════════════════════════════════════════════════════════════════
+
+function setupThreeEnvironment() {
+    const container = document.getElementById('three-viewer');
+
+    // Scene
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0a0a0f);
+
+    // Camera
+    camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 5, 15);
+
+    // Renderer
+    renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.outputEncoding = THREE.sRGBEncoding;
+    container.appendChild(renderer.domElement);
+
+    // OrbitControls
+    controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+    controls.maxPolarAngle = Math.PI / 2 + 0.1; // allow looking slightly below horizon
+
+    // Custom Studio Lighting Array
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(ambientLight);
+
+    const dirLight1 = new THREE.DirectionalLight(0xffffff, 1.0);
+    dirLight1.position.set(10, 20, 10);
+    dirLight1.castShadow = true;
+    dirLight1.shadow.mapSize.width = 2048;
+    dirLight1.shadow.mapSize.height = 2048;
+    dirLight1.shadow.bias = -0.0001;
+    scene.add(dirLight1);
+
+    // Atmospheric Key Lights for wow aesthetics
+    const rimLight = new THREE.DirectionalLight(0x818cf8, 0.8);
+    rimLight.position.set(-15, 10, -15);
+    scene.add(rimLight);
+
+    const floorGrid = new THREE.GridHelper(50, 50, 0x6366f1, 0x222244);
+    floorGrid.position.y = -0.05;
+    scene.add(floorGrid);
+
+    // Mesh Group Container
+    mainMeshGroup = new THREE.Group();
+    scene.add(mainMeshGroup);
+
+    // Window Resize Observer
+    window.addEventListener('resize', onWindowResize);
+
+    // Start Frame Loop
+    renderer.setAnimationLoop(animateFrame);
 }
 
-// ═══════════════════════════════════════════════════════════════
-// Camera Trajectory Loading
-// ═══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════
+// GEOMETRY LOADERS
+// ═══════════════════════════════════════════════════════════════════════
 
-function loadTrajectory(url) {
-    fetch(url)
-        .then(r => r.json())
-        .then(data => {
-            if (!data.cameras || data.cameras.length === 0) return;
+function loadCoherent3DMesh() {
+    return new Promise((resolve) => {
+        const objLoader = new THREE.OBJLoader();
 
-            state.cameraCount = data.cameras.length;
-            state.autoFlyPositions = data.cameras.map(c => new THREE.Vector3(...c.position));
+        objLoader.load(
+            '/data/output/final_mesh.obj',
+            (object) => {
+                // Shared materials
+                meshMaterial = new THREE.MeshStandardMaterial({
+                    color: 0xe0e0e0,
+                    roughness: 0.4,
+                    metalness: 0.1,
+                    side: THREE.DoubleSide
+                });
 
-            // Create trajectory line
-            const points = state.autoFlyPositions;
-            const geometry = new THREE.BufferGeometry().setFromPoints(points);
+                wireframeMaterial = new THREE.MeshBasicMaterial({
+                    color: 0x34d399,
+                    wireframe: true,
+                    transparent: true,
+                    opacity: 0.25
+                });
 
-            // Color gradient
-            const colors = new Float32Array(points.length * 3);
-            for (let i = 0; i < points.length; i++) {
-                const t = i / (points.length - 1);
-                colors[i * 3] = 0.2 + 0.8 * t;       // R
-                colors[i * 3 + 1] = 1.0 - 0.5 * t;   // G
-                colors[i * 3 + 2] = 0.8 * (1 - t);    // B
+                // Apply materials & shadows
+                object.traverse((child) => {
+                    if (child.isMesh) {
+                        child.material = meshMaterial;
+                        child.castShadow = true;
+                        child.receiveShadow = true;
+                        // Optimize normal shading
+                        child.geometry.computeVertexNormals();
+                    }
+                });
+
+                // Automatically Center and Frame Geometry
+                const box = new THREE.Box3().setFromObject(object);
+                const center = box.getCenter(new THREE.Vector3());
+                const size = box.getSize(new THREE.Vector3());
+                const maxDim = Math.max(size.x, size.y, size.z);
+
+                // Offset geometry inside group so its center is exactly at scene origin (0,0,0)
+                object.position.x = -center.x;
+                object.position.y = -center.y + size.y / 2; // place flat on ground grid
+                object.position.z = -center.z;
+
+                mainMeshGroup.add(object);
+
+                // Adjust camera view gracefully to frame the loaded environment
+                camera.position.set(0, size.y * 0.8, maxDim * 1.2);
+                controls.target.set(0, size.y * 0.3, 0);
+                controls.update();
+
+                // Mouse yaw/pitch base cache
+                mouseLook.yaw = Math.atan2(-camera.position.x, -camera.position.z);
+                mouseLook.pitch = Math.asin(camera.position.y / camera.position.length());
+
+                // Build Minimap
+                drawMinimapPath(box);
+
+                updateLoading(70, 'Mesh parsed successfully.');
+                resolve(true);
+            },
+            (xhr) => {
+                if (xhr.total > 0) {
+                    const percent = Math.round((xhr.loaded / xhr.total) * 100);
+                    updateLoading(50 + percent * 0.3, `Downloading 3D Mesh (${percent}%)...`);
+                }
+            },
+            (err) => {
+                console.error('Failed to load final_mesh.obj:', err);
+                // Try falling back to clean point cloud if OBJ is missing
+                loadPointCloudFallback().then(resolve);
             }
-            geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-
-            const material = new THREE.LineBasicMaterial({ vertexColors: true, linewidth: 2 });
-            state.trajectoryLine = new THREE.Line(geometry, material);
-            state.scene.add(state.trajectoryLine);
-
-            // Create camera frustum markers
-            const frustumGroup = new THREE.Group();
-            for (let i = 0; i < points.length; i += Math.max(1, Math.floor(points.length / 30))) {
-                const marker = new THREE.Mesh(
-                    new THREE.SphereGeometry(0.02, 8, 8),
-                    new THREE.MeshBasicMaterial({
-                        color: new THREE.Color().setHSL(i / points.length * 0.8, 0.8, 0.5)
-                    })
-                );
-                marker.position.copy(points[i]);
-                frustumGroup.add(marker);
-            }
-            state.cameraFrustums = frustumGroup;
-            state.scene.add(frustumGroup);
-
-            document.getElementById('stat-cameras').textContent = state.cameraCount;
-        })
-        .catch(() => {});
+        );
+    });
 }
 
-// ═══════════════════════════════════════════════════════════════
-// Animation Loop
-// ═══════════════════════════════════════════════════════════════
+function loadPointCloudFallback() {
+    return new Promise((resolve) => {
+        updateLoading(65, 'Trying dense point cloud fallback...');
+        const plyLoader = new THREE.PLYLoader();
+        plyLoader.load(
+            '/data/output/dense_cloud_clean.ply',
+            (geometry) => {
+                const material = new THREE.PointsMaterial({
+                    size: 0.05,
+                    vertexColors: geometry.hasAttribute('color'),
+                    color: geometry.hasAttribute('color') ? 0xffffff : 0x818cf8
+                });
+                const points = new THREE.Points(geometry, material);
 
-function animate() {
-    requestAnimationFrame(animate);
+                // Center points
+                geometry.computeBoundingBox();
+                const center = geometry.boundingBox.getCenter(new THREE.Vector3());
+                points.position.sub(center);
 
-    const delta = state.clock.getDelta();
+                mainMeshGroup.add(points);
+                resolve(true);
+            },
+            undefined,
+            () => {
+                // Trigger error screen if all geometry fails
+                document.getElementById('loading-screen').classList.add('hidden');
+                document.getElementById('error-screen').classList.remove('hidden');
+                resolve(false);
+            }
+        );
+    });
+}
 
-    // Movement
-    if (state.autoFly && state.autoFlyPositions.length >= 2) {
-        updateAutoFly(delta);
+function togglePointCloudLayer() {
+    const btnPts = document.getElementById('btn-shade-pts');
+    const isActive = btnPts.classList.toggle('active');
+
+    if (isActive) {
+        if (!pointCloudGroup) {
+            pointCloudGroup = new THREE.Group();
+            scene.add(pointCloudGroup);
+            const plyLoader = new THREE.PLYLoader();
+            plyLoader.load('/data/output/dense_cloud.ply', (geometry) => {
+                const mat = new THREE.PointsMaterial({ size: 0.03, color: 0xfbbf24, transparent: true, opacity: 0.75 });
+                const pts = new THREE.Points(geometry, mat);
+                // Match parent mesh centering logic
+                if (mainMeshGroup && mainMeshGroup.children[0]) {
+                    pts.position.copy(mainMeshGroup.children[0].position);
+                }
+                pointCloudGroup.add(pts);
+            });
+        } else {
+            pointCloudGroup.visible = true;
+        }
+    } else if (pointCloudGroup) {
+        pointCloudGroup.visible = false;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ANIMATION & CONTROLS FRAME LOOP
+// ═══════════════════════════════════════════════════════════════════════
+
+function animateFrame() {
+    if (activePortalMode !== 'three') return;
+
+    TWEEN.update();
+
+    if (isFlyMode && !isCinematicTouring) {
+        // Compute standard camera direction vectors
+        const forward = new THREE.Vector3();
+        camera.getWorldDirection(forward);
+        forward.y = 0; // lock translation to horizontal plane
+        forward.normalize();
+
+        const right = new THREE.Vector3(-forward.z, 0, forward.x);
+
+        // Apply Keyboard Velocities
+        if (keysPressed.w) camera.position.addScaledVector(forward, flySpeed);
+        if (keysPressed.s) camera.position.addScaledVector(forward, -flySpeed);
+        if (keysPressed.a) camera.position.addScaledVector(right, -flySpeed);
+        if (keysPressed.d) camera.position.addScaledVector(right, flySpeed);
+        if (keysPressed.q) camera.position.y -= flySpeed * 0.8;
+        if (keysPressed.e) camera.position.y += flySpeed * 0.8;
+
+        // Keep camera target slightly ahead to maintain look orientation logic
+        controls.target.copy(camera.position).addScaledVector(camera.getWorldDirection(new THREE.Vector3()), 1.0);
+    } else if (!isCinematicTouring) {
+        controls.update();
+    }
+
+    renderer.render(scene, camera);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// FIRST-PERSON / ORBIT CONTROLS HANDLING
+// ═══════════════════════════════════════════════════════════════════════
+
+function setupPortalInterface() {
+    // ── PORTAL MODE TABS ──
+    document.getElementById('tab-three').addEventListener('click', () => switchPortalMode('three'));
+    document.getElementById('tab-pano').addEventListener('click', () => switchPortalMode('pano'));
+
+    // ── THREE.JS MODE BUTTONS ──
+    document.getElementById('btn-mode-orbit').addEventListener('click', () => setNavigationMode(false));
+    document.getElementById('btn-mode-fly').addEventListener('click', () => setNavigationMode(true));
+
+    // ── SHADING Toggles ──
+    document.getElementById('btn-shade-mesh').addEventListener('click', () => setShadingMode('mesh'));
+    document.getElementById('btn-shade-wire').addEventListener('click', () => setShadingMode('wire'));
+    document.getElementById('btn-shade-pts').addEventListener('click', togglePointCloudLayer);
+
+    // ── CINEMATIC TOUR ──
+    document.getElementById('btn-cinematic').addEventListener('click', toggleCinematicTour);
+
+    // ── KEYBOARD & MOUSE DRAG LOOK (Fly Mode) ──
+    window.addEventListener('keydown', (e) => {
+        const key = e.key.toLowerCase();
+        if (key in keysPressed) keysPressed[key] = true;
+    });
+
+    window.addEventListener('keyup', (e) => {
+        const key = e.key.toLowerCase();
+        if (key in keysPressed) keysPressed[key] = false;
+    });
+
+    const domTarget = renderer.domElement;
+    domTarget.addEventListener('mousedown', (e) => {
+        if (isFlyMode) {
+            mouseLook.isDragging = true;
+            mouseLook.prevX = e.clientX;
+            mouseLook.prevY = e.clientY;
+        }
+    });
+
+    window.addEventListener('mouseup', () => { mouseLook.isDragging = false; });
+
+    domTarget.addEventListener('mousemove', (e) => {
+        if (isFlyMode && mouseLook.isDragging && !isCinematicTouring) {
+            const deltaX = e.clientX - mouseLook.prevX;
+            const deltaY = e.clientY - mouseLook.prevY;
+            mouseLook.prevX = e.clientX;
+            mouseLook.prevY = e.clientY;
+
+            mouseLook.yaw -= deltaX * 0.003;
+            mouseLook.pitch = Math.max(-Math.PI/2.1, Math.min(Math.PI/2.1, mouseLook.pitch - deltaY * 0.003));
+
+            // Convert spherical angles to Target Vector
+            const direction = new THREE.Vector3(
+                Math.cos(mouseLook.pitch) * Math.sin(mouseLook.yaw),
+                Math.sin(mouseLook.pitch),
+                Math.cos(mouseLook.pitch) * Math.cos(mouseLook.yaw)
+            );
+
+            controls.target.copy(camera.position).add(direction);
+            camera.lookAt(controls.target);
+        }
+    });
+}
+
+function setNavigationMode(enableFly) {
+    isFlyMode = enableFly;
+    document.getElementById('btn-mode-orbit').classList.toggle('active', !enableFly);
+    document.getElementById('btn-mode-fly').classList.toggle('active', enableFly);
+
+    document.getElementById('help-three-orbit').classList.toggle('hidden', enableFly);
+    document.getElementById('help-three-fly').classList.toggle('hidden', !enableFly);
+
+    if (enableFly) {
+        controls.enabled = false; // detach orbit damping conflicts
+        // Sync yaw/pitch cache exactly to camera's forward orientation
+        const dir = camera.getWorldDirection(new THREE.Vector3());
+        mouseLook.yaw = Math.atan2(dir.x, dir.z);
+        mouseLook.pitch = Math.asin(dir.y);
     } else {
-        updateMovement(delta);
-    }
-
-    // Update camera rotation from euler
-    const quaternion = new THREE.Quaternion();
-    const eulerThree = new THREE.Euler(state.euler.pitch, state.euler.yaw, 0, 'YXZ');
-    quaternion.setFromEuler(eulerThree);
-    state.camera.quaternion.copy(quaternion);
-
-    // Render
-    state.renderer.render(state.scene, state.camera);
-
-    // FPS counter
-    state.fpsFrames++;
-    const now = performance.now();
-    if (now - state.fpsTime > 1000) {
-        state.currentFPS = Math.round(state.fpsFrames * 1000 / (now - state.fpsTime));
-        state.fpsFrames = 0;
-        state.fpsTime = now;
-        document.getElementById('stat-fps').textContent = state.currentFPS;
-    }
-
-    // Update position display
-    const pos = state.camera.position;
-    document.getElementById('pos-x').textContent = pos.x.toFixed(2);
-    document.getElementById('pos-y').textContent = pos.y.toFixed(2);
-    document.getElementById('pos-z').textContent = pos.z.toFixed(2);
-}
-
-function updateMovement(delta) {
-    const speed = state.moveSpeed * (state.keys['shift'] ? state.sprintMultiplier : 1);
-
-    const forward = new THREE.Vector3();
-    state.camera.getWorldDirection(forward);
-    forward.normalize();
-
-    const right = new THREE.Vector3();
-    right.crossVectors(forward, state.camera.up).normalize();
-
-    const move = new THREE.Vector3();
-
-    if (state.keys['w']) move.add(forward);
-    if (state.keys['s']) move.sub(forward);
-    if (state.keys['a']) move.sub(right);
-    if (state.keys['d']) move.add(right);
-    if (state.keys['q'] || state.keys[' ']) move.y += 1;
-    if (state.keys['e']) move.y -= 1;
-
-    if (move.length() > 0) {
-        move.normalize().multiplyScalar(speed);
-        state.camera.position.add(move);
+        controls.enabled = true;
+        // push target slightly forward to reorient orbit bounds nicely
+        controls.target.copy(camera.position).addScaledVector(camera.getWorldDirection(new THREE.Vector3()), 5.0);
+        controls.update();
     }
 }
 
-function updateAutoFly(delta) {
-    const positions = state.autoFlyPositions;
-    const n = positions.length;
+function setShadingMode(mode) {
+    const isWire = mode === 'wire';
+    document.getElementById('btn-shade-mesh').classList.toggle('active', !isWire);
+    document.getElementById('btn-shade-wire').classList.toggle('active', isWire);
 
-    state.autoFlyT += 0.001;
-    if (state.autoFlyT >= 1) state.autoFlyT = 0;
+    if (mainMeshGroup) {
+        mainMeshGroup.traverse((child) => {
+            if (child.isMesh) {
+                child.material = isWire ? wireframeMaterial : meshMaterial;
+            }
+        });
+    }
+}
 
-    const tScaled = state.autoFlyT * (n - 1);
-    const idx = Math.floor(tScaled);
-    const frac = tScaled - idx;
+// ═══════════════════════════════════════════════════════════════════════
+// AUTOMATIC CINEMATIC FLY-THROUGH TOUR
+// ═══════════════════════════════════════════════════════════════════════
 
-    if (idx < n - 1) {
-        const pos = new THREE.Vector3().lerpVectors(positions[idx], positions[idx + 1], frac);
-        state.camera.position.copy(pos);
+function toggleCinematicTour() {
+    const btnTour = document.getElementById('btn-cinematic');
+    isCinematicTouring = !isCinematicTouring;
 
-        // Look towards next position
-        if (idx < n - 2) {
-            const lookTarget = new THREE.Vector3().lerpVectors(positions[idx + 1], positions[idx + 2], frac);
-            const dir = lookTarget.clone().sub(pos).normalize();
-            state.euler.yaw = Math.atan2(dir.x, dir.z);
-            state.euler.pitch = Math.asin(-dir.y);
+    if (isCinematicTouring) {
+        btnTour.classList.add('active');
+        btnTour.textContent = '⏹️ Stop Cinematic';
+        controls.enabled = false;
+        startCinematicSequence();
+    } else {
+        btnTour.classList.remove('active');
+        btnTour.textContent = '🎬 Cinematic Tour';
+        if (!isFlyMode) controls.enabled = true;
+        if (tourTween) tourTween.stop();
+    }
+}
+
+function startCinematicSequence() {
+    if (!metaData || !metaData.positions || sceneOrderList.length < 2) {
+        alert('Cinematic flight markers not found in tour config. Freely navigate with mouse/keyboard.');
+        toggleCinematicTour();
+        return;
+    }
+
+    // Build cinematic spline waypoints directly mapped from extracted drone camera matrices
+    const pts = metaData.positions;
+    const waypoints = [];
+
+    // Base offset matching object group adjustment cache
+    let groupOffset = new THREE.Vector3(0,0,0);
+    if (mainMeshGroup && mainMeshGroup.children[0]) { groupOffset.copy(mainMeshGroup.children[0].position); }
+
+    for (const scId of sceneOrderList) {
+        if (pts[scId]) {
+            // Apply scale mapping logic to place waypoints perfectly matching the mesh scale coordinate array
+            waypoints.push(new THREE.Vector3(
+                pts[scId][0] * 0.1 + groupOffset.x,
+                2.5, // keep eye height consistently safe
+                pts[scId][1] * 0.1 + groupOffset.z
+            ));
         }
     }
+
+    if (waypoints.length < 2) return;
+
+    let currentStep = 0;
+    const flyToNextWaypoint = () => {
+        if (!isCinematicTouring) return;
+
+        const nextIdx = (currentStep + 1) % waypoints.length;
+        const targetPos = waypoints[nextIdx];
+        
+        // Calculate smooth target orientation vector pointing along flight path
+        const lookTarget = new THREE.Vector3().copy(targetPos);
+        if (waypoints.length > 2) {
+            const nextNextIdx = (nextIdx + 1) % waypoints.length;
+            lookTarget.lerp(waypoints[nextNextIdx], 0.5);
+        }
+
+        const duration = 4000; // 4 seconds per node interpolation
+        
+        // Tween Position
+        tourTween = new TWEEN.Tween(camera.position)
+            .to({ x: targetPos.x, y: targetPos.y, z: targetPos.z }, duration)
+            .easing(TWEEN.Easing.Quadratic.InOut)
+            .onUpdate(() => {
+                // Ensure dynamic look logic matches smoothly
+                camera.lookAt(lookTarget);
+            })
+            .onComplete(() => {
+                currentStep = nextIdx;
+                flyToNextWaypoint();
+            })
+            .start();
+    };
+
+    // Smoothly fly to initial waypoint from current position first
+    new TWEEN.Tween(camera.position)
+        .to({ x: waypoints[0].x, y: waypoints[0].y, z: waypoints[0].z }, 2000)
+        .easing(TWEEN.Easing.Cubic.Out)
+        .onComplete(flyToNextWaypoint)
+        .start();
 }
 
-// ═══════════════════════════════════════════════════════════════
-// Resize
-// ═══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════
+// HYBRID VIEW SWITCHER: THREE.JS vs PANNELLUM ENGINE
+// ═══════════════════════════════════════════════════════════════════════
 
-function onResize() {
-    state.camera.aspect = window.innerWidth / window.innerHeight;
-    state.camera.updateProjectionMatrix();
-    state.renderer.setSize(window.innerWidth, window.innerHeight);
+function switchPortalMode(targetMode) {
+    if (activePortalMode === targetMode) return;
+    activePortalMode = targetMode;
+
+    const isThree = targetMode === 'three';
+    document.getElementById('tab-three').classList.toggle('active', isThree);
+    document.getElementById('tab-pano').classList.toggle('active', !isThree);
+
+    // Canvas visibility
+    document.getElementById('three-viewer').style.visibility = isThree ? 'visible' : 'hidden';
+    document.getElementById('panorama-viewer').classList.toggle('hidden', isThree);
+
+    // HUD controls arrays
+    document.getElementById('three-controls').classList.toggle('hidden', !isThree);
+    document.getElementById('pano-controls').classList.toggle('hidden', isThree);
+
+    // Help Guides
+    document.getElementById('help-three-orbit').classList.toggle('hidden', !isThree || isFlyMode);
+    document.getElementById('help-three-fly').classList.toggle('hidden', !isThree || !isFlyMode);
+    document.getElementById('help-pano').classList.toggle('hidden', isThree);
+
+    // Badges
+    document.getElementById('hud-mode-badge').textContent = isThree ? '3D Mesh Environment' : '360° Photo Spheres';
+
+    // Refresh Pannellum sizing buffers cleanly on view entry
+    if (!isThree && pannellumViewer) {
+        setTimeout(() => pannellumViewer.resize(), 50);
+        updatePanoStatusUI(sceneOrderList[currentPanoIdx]);
+    } else {
+        document.getElementById('scene-counter').textContent = 'Live Map';
+    }
 }
 
-// ═══════════════════════════════════════════════════════════════
-// Entry Point
-// ═══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════
+// ORIGINAL PANNELLUM PHOTO SPHERE INTEGRATION
+// ═══════════════════════════════════════════════════════════════════════
 
-window.addEventListener('DOMContentLoaded', init);
+function initPannellumViewer() {
+    const configObj = {
+        default: tourConfig.default || { firstScene: sceneOrderList[0], sceneFadeDuration: 1000 },
+        scenes: tourConfig.scenes
+    };
+
+    try {
+        pannellumViewer = pannellum.viewer('panorama-viewer', configObj);
+        pannellumViewer.on('scenechange', (scId) => {
+            currentPanoIdx = sceneOrderList.indexOf(scId);
+            updatePanoStatusUI(scId);
+        });
+
+        // Setup controller buttons cleanly
+        document.getElementById('btn-prev').onclick = () => {
+            if (currentPanoIdx > 0) pannellumViewer.loadScene(sceneOrderList[--currentPanoIdx]);
+        };
+        document.getElementById('btn-next').onclick = () => {
+            if (currentPanoIdx < sceneOrderList.length - 1) pannellumViewer.loadScene(sceneOrderList[++currentPanoIdx]);
+        };
+        
+        let panoAutoTouring = false;
+        let panoTimer = null;
+        document.getElementById('btn-auto-tour').onclick = () => {
+            panoAutoTouring = !panoAutoTouring;
+            document.getElementById('btn-auto-tour').classList.toggle('active', panoAutoTouring);
+            document.getElementById('btn-auto-tour').textContent = panoAutoTouring ? '⏹️ Pause Spheres' : '▶ Play Spheres';
+
+            const stepTour = () => {
+                if (!panoAutoTouring) return;
+                currentPanoIdx = (currentPanoIdx + 1) % sceneOrderList.length;
+                pannellumViewer.loadScene(sceneOrderList[currentPanoIdx]);
+                panoTimer = setTimeout(stepTour, 4000);
+            };
+
+            if (panoAutoTouring) stepTour();
+            else clearTimeout(panoTimer);
+        };
+    } catch (err) {
+        console.warn('Pannellum parallel setup omitted context parameters safely.', err);
+    }
+}
+
+function updatePanoStatusUI(scId) {
+    const scene = tourConfig.scenes[scId];
+    const title = scene ? scene.title : scId;
+    document.getElementById('scene-counter').textContent = `${title} (${currentPanoIdx + 1}/${sceneOrderList.length})`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// UTILITY HELPERS
+// ═══════════════════════════════════════════════════════════════════════
+
+function onWindowResize() {
+    if (camera && renderer) {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+    if (pannellumViewer && activePortalMode === 'pano') {
+        pannellumViewer.resize();
+    }
+}
+
+function updateLoading(percent, statusText) {
+    const bar = document.getElementById('loading-progress');
+    const label = document.getElementById('loading-status');
+    if (bar) bar.style.width = percent + '%';
+    if (label) label.textContent = statusText;
+}
+
+function drawMinimapPath(box) {
+    // Basic graphic map renderer plotting bounding corners inside SVG
+    const svg = document.getElementById('minimap-svg');
+    if (!svg) return;
+    svg.innerHTML = '<rect width="100" height="100" fill="none" stroke="rgba(99,102,241,0.2)" stroke-width="2"/>';
+    // Add visual marker point for boundary logic
+    svg.innerHTML += '<circle cx="50" cy="50" r="6" fill="#34d399" opacity="0.8"><animate attributeName="r" values="5;8;5" dur="2s" repeatCount="indefinite"/></circle>';
+}

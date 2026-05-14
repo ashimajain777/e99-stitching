@@ -105,9 +105,9 @@ def enhance_images(input_dir: str = None, output_dir: str = None,
         Dict with processing statistics.
     """
     if input_dir is None:
-        input_dir = config.FRAMES_KEYFRAMES_DIR
+        input_dir = config.FRAMES_FILTERED_DIR
     if output_dir is None:
-        output_dir = config.PREPROCESSED_DIR
+        output_dir = config.ENHANCED_DIR
 
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
@@ -128,7 +128,7 @@ def enhance_images(input_dir: str = None, output_dir: str = None,
     ])
 
     if not image_files:
-        print(f"  ❌ No images found in {input_dir}")
+        print(f"  [FAIL] No images found in {input_dir}")
         return {"total": 0, "processed": 0}
 
     print(f"  Input: {len(image_files)} images from {input_dir}")
@@ -176,7 +176,7 @@ def enhance_images(input_dir: str = None, output_dir: str = None,
         "output_dir": str(output_dir),
     }
 
-    print(f"\n  ✅ Enhanced {processed} images → {output_dir}")
+    print(f"\n  [OK] Enhanced {processed} images -> {output_dir}")
     return stats
 
 
